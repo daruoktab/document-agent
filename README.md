@@ -43,6 +43,8 @@ Buat berkas `.env` di direktori utama repositori dengan konfigurasi endpoint mod
 VLM_BASE_URL="http://localhost:1234/v1"
 VLM_MODEL="qwen-35b-vision"
 VLM_API_KEY="lm-studio"
+# Batas proses dokumen bersamaan di Streamlit; gunakan 1 untuk satu endpoint VLM.
+MAX_CONCURRENT_EXTRACTIONS="1"
 ```
 
 ---

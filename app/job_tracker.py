@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -32,6 +33,21 @@ from typing import Any, ClassVar
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_SLOT_FILE_NAME = ".extraction_slot.json"
+_SLOT_POLL_SECONDS = 1.0
+
+
+def get_max_concurrent_extractions() -> int:
+    """Ambil batas proses ekstraksi bersamaan; satu proses adalah default aman untuk VLM."""
+    raw_value = os.environ.get("MAX_CONCURRENT_EXTRACTIONS", "1").strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "MAX_CONCURRENT_EXTRACTIONS=%r tidak valid; menggunakan nilai 1.",
+            raw_value,
+        )
+        return 1
 
 
 def is_pid_alive(pid: int | None) -> bool:
@@ -80,7 +96,7 @@ class JobInfo:
     latest_log_path: Path
     status_file: Path
     progress_file: Path
-    status: str = "running"  # "running" | "completed" | "failed" | "canceled"
+    status: str = "queued"  # "queued" | "running" | "completed" | "failed" | "canceled"
     current_page: int = 0
     total_pages: int = 0
     stage: str = "Memulai ekstraksi..."
@@ -98,6 +114,7 @@ class JobInfo:
     pid: int | None = None
     returncode: int | None = None
     error_message: str | None = None
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     recent_logs: collections.deque[str] = field(
         default_factory=lambda: collections.deque(maxlen=200)
     )
@@ -136,6 +153,7 @@ class JobInfo:
             "pid": self.pid,
             "returncode": self.returncode,
             "error_message": self.error_message,
+            "run_id": self.run_id,
         }
 
     def save_status(self) -> None:
@@ -209,12 +227,12 @@ class JobManager:
         chunk_size: int = 1000,
         chunk_overlap: int = 150,
     ) -> JobInfo:
-        """Mulai proses ekstraksi baru di latar belakang jika belum ada yang berjalan."""
+        """Antrekan ekstraksi baru jika dokumen yang sama belum diproses."""
         with self._lock:
             stem = input_path.stem
             existing_job = self.get_job(stem, output_dir=output_dir)
-            if existing_job and existing_job.status == "running":
-                # Sudah berjalan, kembalikan job yang sedang aktif
+            if existing_job and existing_job.status in {"queued", "running"}:
+                # Sudah diantrekan atau berjalan, kembalikan job yang aktif.
                 return existing_job
 
             doc_output_dir = output_dir / stem
@@ -256,9 +274,9 @@ class JobManager:
                 latest_log_path=latest_log_path,
                 status_file=status_file,
                 progress_file=progress_file,
-                status="running",
-                stage="Menginisialisasi proses CLI...",
-                last_message="Memulai pipeline ekstraksi...",
+                status="queued",
+                stage="Menunggu slot ekstraksi VLM...",
+                last_message="Job masuk antrean ekstraksi.",
                 started_at=start_iso,
             )
             job.save_status()
@@ -300,10 +318,122 @@ class JobManager:
             worker.start()
             return job
 
+    @staticmethod
+    def _slot_paths(output_dir: Path) -> list[Path]:
+        slot_count = get_max_concurrent_extractions()
+        if slot_count == 1:
+            return [output_dir / _SLOT_FILE_NAME]
+        return [output_dir / _SLOT_FILE_NAME] + [
+            output_dir / f".extraction_slot_{slot_number}.json"
+            for slot_number in range(2, slot_count + 1)
+        ]
+
+    @staticmethod
+    def _read_slot_owner(slot_path: Path) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(slot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _write_slot_owner(
+        slot_path: Path, job: JobInfo, *, subprocess_pid: int | None
+    ) -> None:
+        payload = {
+            "run_id": job.run_id,
+            "job_id": job.job_id,
+            "launcher_pid": os.getpid(),
+            "subprocess_pid": subprocess_pid,
+            "updated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        }
+        slot_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _acquire_execution_slot(self, job: JobInfo) -> Path | None:
+        """Dapatkan slot lintas thread/proses lewat file lock yang otomatis dapat dipulihkan."""
+        slot_paths = self._slot_paths(job.output_dir)
+        job.output_dir.mkdir(parents=True, exist_ok=True)
+        last_wait_notice = 0.0
+
+        while True:
+            with self._lock:
+                if job.status == "canceled":
+                    return None
+
+            for slot_path in slot_paths:
+                try:
+                    descriptor = os.open(
+                        slot_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    )
+                except FileExistsError:
+                    owner = self._read_slot_owner(slot_path) or {}
+                    owner_pid = owner.get("subprocess_pid") or owner.get("launcher_pid")
+                    if isinstance(owner_pid, int) and not is_pid_alive(owner_pid):
+                        try:
+                            slot_path.unlink()
+                            logger.warning(
+                                "Menghapus slot ekstraksi usang dari job %s (PID %s).",
+                                owner.get("job_id", "tidak diketahui"),
+                                owner_pid,
+                            )
+                            break
+                        except FileNotFoundError:
+                            break
+                        except OSError as exc:
+                            logger.warning(
+                                "Gagal memulihkan slot ekstraksi usang: %s", exc
+                            )
+                    continue
+
+                try:
+                    payload = {
+                        "run_id": job.run_id,
+                        "job_id": job.job_id,
+                        "launcher_pid": os.getpid(),
+                        "subprocess_pid": None,
+                        "updated_at": dt.datetime.now(dt.UTC).isoformat(
+                            timespec="seconds"
+                        ),
+                    }
+                    os.write(descriptor, json.dumps(payload).encode("utf-8"))
+                except OSError:
+                    slot_path.unlink(missing_ok=True)
+                    raise
+                finally:
+                    os.close(descriptor)
+                return slot_path
+
+            now = time.monotonic()
+            if now - last_wait_notice >= 5:
+                with self._lock:
+                    job.stage = "Menunggu slot ekstraksi VLM..."
+                    job.last_message = "Menunggu dokumen lain menyelesaikan ekstraksi."
+                    job.save_status()
+                last_wait_notice = now
+            time.sleep(_SLOT_POLL_SECONDS)
+
+    @staticmethod
+    def _release_execution_slot(slot_path: Path | None, run_id: str) -> None:
+        if slot_path is None:
+            return
+        owner = JobManager._read_slot_owner(slot_path)
+        if owner and owner.get("run_id") != run_id:
+            return
+        try:
+            slot_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Gagal melepaskan slot ekstraksi: %s", exc)
+
     def _run_worker(self, job: JobInfo, cmd: list[str]) -> None:
         """Worker background yang membaca stdout proses dan mengalirkan log ke disk."""
         start_time = time.time()
+        slot_path: Path | None = None
         try:
+            slot_path = self._acquire_execution_slot(job)
+            if slot_path is None:
+                return
+
             proc = subprocess.Popen(
                 cmd,
                 cwd=PROJECT_ROOT,
@@ -317,8 +447,10 @@ class JobManager:
             with self._lock:
                 self._processes[job.job_id] = proc
                 job.pid = proc.pid
+                job.status = "running"
                 job.stage = "Proses CLI aktif, menunggu parsing halaman..."
                 job.save_status()
+            self._write_slot_owner(slot_path, job, subprocess_pid=proc.pid)
 
             # Buka kedua file log dalam mode append dengan autoflush
             with (
@@ -382,6 +514,38 @@ class JobManager:
                 job.error_message = str(exc)
                 job.last_message = f"Exception: {exc}"
                 job.save_status()
+        finally:
+            self._release_execution_slot(slot_path, job.run_id)
+
+    @staticmethod
+    def _recover_terminated_job(job: JobInfo) -> None:
+        """Pulihkan status akhir saat Streamlit kehilangan pengawas subprocess."""
+        if job.out_file.is_file() and job.out_file.stat().st_size > 0:
+            job.status = "completed"
+            job.stage = "Selesai (dipulihkan dari hasil di disk)"
+            job.last_message = "Hasil Markdown ditemukan setelah pengawas dimuat ulang."
+            job.error_message = None
+        else:
+            job.status = "failed"
+            job.stage = "Subprocess berhenti tanpa status akhir"
+            job.error_message = (
+                "Subprocess tidak aktif sebelum pengawas menerima status akhirnya. "
+                "Periksa log lengkap dan log layanan Streamlit untuk restart atau kehabisan sumber daya."
+            )
+            job.last_message = job.error_message
+        job.save_status()
+
+    @staticmethod
+    def _recover_abandoned_queue(job: JobInfo) -> None:
+        """Tandai antrean yang tertinggal setelah proses Streamlit dimuat ulang."""
+        job.status = "failed"
+        job.stage = "Antrean terhenti saat layanan dimuat ulang"
+        job.error_message = (
+            "Job masih menunggu antrean ketika layanan Streamlit berhenti atau dimuat ulang. "
+            "Silakan jalankan ulang ekstraksi."
+        )
+        job.last_message = job.error_message
+        job.save_status()
 
     def _parse_line_progress(self, job: JobInfo, line: str) -> None:
         """Deteksi pola progres (halaman X / Y, slide, SQL, guardrail) dari baris log."""
@@ -471,17 +635,17 @@ class JobManager:
                         # Subprocess sudah selesai
                         returncode = proc.poll()
                         job.returncode = returncode
-                        job.status = (
-                            "completed" if returncode == 0 else "failed"
-                        )
+                        job.status = "completed" if returncode == 0 else "failed"
+                        job.stage = "Selesai" if returncode == 0 else "Gagal"
+                        if returncode != 0:
+                            job.error_message = (
+                                f"Proses berhenti dengan kode error {returncode}."
+                            )
                         job.save_status()
                     # Worker thread may still be starting the subprocess.
                     # Do not mark a job failed before it receives a PID.
                     elif job.pid is not None and not is_pid_alive(job.pid):
-                        job.status = "failed"
-                        job.stage = "Proses Berhenti Tak Terduga"
-                        job.error_message = "Proses sistem telah terhenti."
-                        job.save_status()
+                        self._recover_terminated_job(job)
                 return job
 
         # 2. Jika tidak ada di memori (misal server streamlit sempat restart), coba load dari disk
@@ -535,19 +699,18 @@ class JobManager:
                     pid=data.get("pid"),
                     returncode=data.get("returncode"),
                     error_message=data.get("error_message"),
+                    run_id=data.get("run_id", uuid.uuid4().hex),
                     recent_logs=recent,
                 )
 
-                # Validasi jika status tersimpan "running" tapi PID sudah mati
-                if (
-                    job.status == "running"
-                    and job.pid is not None
-                    and not is_pid_alive(job.pid)
+                # Job antrean tidak memiliki worker setelah server Streamlit dimuat ulang.
+                if job.status == "queued":
+                    self._recover_abandoned_queue(job)
+                # Validasi jika status tersimpan "running" tapi PID sudah mati.
+                elif job.status == "running" and (
+                    job.pid is None or not is_pid_alive(job.pid)
                 ):
-                    job.status = "failed"
-                    job.stage = "Proses Terhenti"
-                    job.error_message = "Proses tidak aktif lagi di sistem."
-                    job.save_status()
+                    self._recover_terminated_job(job)
 
                 with self._lock:
                     self._jobs[stem] = job
@@ -593,7 +756,7 @@ class JobManager:
             job = self._jobs.get(stem)
             proc = self._processes.get(stem)
 
-        if not job or job.status != "running":
+        if not job or job.status not in {"queued", "running"}:
             return False
 
         # Matikan proses sistem operasi

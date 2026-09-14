@@ -7,10 +7,18 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from app.job_tracker import JobInfo, JobManager, is_pid_alive
+from app.job_tracker import (
+    JobInfo,
+    JobManager,
+    get_max_concurrent_extractions,
+    is_pid_alive,
+)
 
 
 class TestJobTracker(unittest.TestCase):
@@ -215,6 +223,114 @@ class TestJobTracker(unittest.TestCase):
         self.assertTrue(is_pid_alive(current_pid))
         self.assertFalse(is_pid_alive(None))
         self.assertFalse(is_pid_alive(-1))
+
+    def test_execution_slot_defaults_to_one_and_releases(self) -> None:
+        manager = JobManager.get_instance()
+        job = JobInfo(
+            job_id="slot_test",
+            file_name="slot_test.pdf",
+            input_path=self.temp_dir / "slot_test.pdf",
+            output_dir=self.temp_dir,
+            out_file=self.temp_dir / "slot_test.md",
+            db_file=None,
+            log_path=self.log_dir / "slot_test.log",
+            latest_log_path=self.log_dir / "slot_test_latest.log",
+            status_file=self.log_dir / "slot_test_status.json",
+            progress_file=self.log_dir / "slot_test_progress.txt",
+        )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MAX_CONCURRENT_EXTRACTIONS", None)
+            self.assertEqual(get_max_concurrent_extractions(), 1)
+            slot_path = manager._acquire_execution_slot(job)
+
+        self.assertIsNotNone(slot_path)
+        assert slot_path is not None
+        self.assertTrue(slot_path.exists())
+        manager._release_execution_slot(slot_path, job.run_id)
+        self.assertFalse(slot_path.exists())
+
+    def test_execution_slot_waits_until_active_job_releases(self) -> None:
+        manager = JobManager.get_instance()
+
+        def make_job(job_id: str) -> JobInfo:
+            return JobInfo(
+                job_id=job_id,
+                file_name=f"{job_id}.pdf",
+                input_path=self.temp_dir / f"{job_id}.pdf",
+                output_dir=self.temp_dir,
+                out_file=self.temp_dir / f"{job_id}.md",
+                db_file=None,
+                log_path=self.log_dir / f"{job_id}.log",
+                latest_log_path=self.log_dir / f"{job_id}_latest.log",
+                status_file=self.log_dir / f"{job_id}_status.json",
+                progress_file=self.log_dir / f"{job_id}_progress.txt",
+            )
+
+        first_job = make_job("first")
+        second_job = make_job("second")
+        first_slot = manager._acquire_execution_slot(first_job)
+        assert first_slot is not None
+        acquired_slots: list[Path | None] = []
+        worker = threading.Thread(
+            target=lambda: acquired_slots.append(
+                manager._acquire_execution_slot(second_job)
+            )
+        )
+        worker.start()
+        time.sleep(0.05)
+        self.assertTrue(worker.is_alive())
+
+        manager._release_execution_slot(first_slot, first_job.run_id)
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(acquired_slots), 1)
+        self.assertIsNotNone(acquired_slots[0])
+        manager._release_execution_slot(acquired_slots[0], second_job.run_id)
+
+    def test_recover_terminated_job_marks_existing_output_complete(self) -> None:
+        out_file = self.temp_dir / "recovered.md"
+        out_file.write_text("# Hasil ekstraksi", encoding="utf-8")
+        job = JobInfo(
+            job_id="recovered",
+            file_name="recovered.pdf",
+            input_path=self.temp_dir / "recovered.pdf",
+            output_dir=self.temp_dir,
+            out_file=out_file,
+            db_file=None,
+            log_path=self.log_dir / "recovered.log",
+            latest_log_path=self.log_dir / "recovered_latest.log",
+            status_file=self.log_dir / "recovered_status.json",
+            progress_file=self.log_dir / "recovered_progress.txt",
+            status="running",
+        )
+
+        JobManager._recover_terminated_job(job)
+
+        self.assertEqual(job.status, "completed")
+        self.assertIsNone(job.error_message)
+        self.assertIn("dipulihkan", job.stage)
+
+    def test_recover_abandoned_queue_requires_retry(self) -> None:
+        job = JobInfo(
+            job_id="queued",
+            file_name="queued.pdf",
+            input_path=self.temp_dir / "queued.pdf",
+            output_dir=self.temp_dir,
+            out_file=self.temp_dir / "queued.md",
+            db_file=None,
+            log_path=self.log_dir / "queued.log",
+            latest_log_path=self.log_dir / "queued_latest.log",
+            status_file=self.log_dir / "queued_status.json",
+            progress_file=self.log_dir / "queued_progress.txt",
+            status="queued",
+        )
+
+        JobManager._recover_abandoned_queue(job)
+
+        self.assertEqual(job.status, "failed")
+        self.assertIn("jalankan ulang", job.error_message or "")
 
 
 if __name__ == "__main__":

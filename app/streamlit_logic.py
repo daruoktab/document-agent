@@ -232,6 +232,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
     job_manager = JobManager.get_instance()
     st.markdown("### Dokumen dalam batch upload")
     labels = {
+        "queued": "Menunggu antrean",
         "running": "Sedang diproses",
         "completed": "Selesai",
         "failed": "Gagal",
@@ -262,7 +263,7 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
         return
 
     # Jika job telah selesai atau gagal, minta Streamlit rerun halaman penuh
-    if job.status != "running":
+    if job.status not in {"queued", "running"}:
         st.rerun()
 
     # Progress bar & badge
@@ -285,7 +286,11 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
     is_alive = is_pid_alive(job.pid) if job.pid else True
     c4.metric(
         "🩺 Status Eksekusi",
-        "🟢 Berjalan Normal" if is_alive else "⚠️ Tidak Responsif",
+        (
+            "🟡 Menunggu antrean"
+            if job.status == "queued"
+            else ("🟢 Berjalan Normal" if is_alive else "⚠️ Tidak Responsif")
+        ),
     )
 
     # Kotak informasi background safety & path file log fisik
@@ -819,7 +824,7 @@ def main() -> None:
                 status = doc["status"]
                 status_icon = (
                     "⏳"
-                    if status == "running"
+                    if status in {"queued", "running"}
                     else ("🟢" if status == "completed" else "❌")
                 )
                 col_btn1, col_btn2 = st.columns([3.5, 1])
@@ -906,7 +911,7 @@ def main() -> None:
         # MODE 2: DOKUMEN AKTIF DIPILIH
         job = job_manager.get_job(active_stem, output_dir=output_dir)
 
-        if job is not None and job.status == "running":
+        if job is not None and job.status in {"queued", "running"}:
             render_live_monitor(active_stem, output_dir)
 
         elif job is not None and job.status == "completed":
