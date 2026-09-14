@@ -260,7 +260,7 @@ def main() -> int:
             return 1
 
         out_dir = Path(args.out).resolve() if args.out else Path("output/batch").resolve()
-        batch_extract_documents(
+        batch_result = batch_extract_documents(
             files_to_process,
             output_dir=out_dir,
             forced_specs=args.doc_type,
@@ -268,7 +268,7 @@ def main() -> int:
             preview_chunks=args.preview_chunks,
             settings=settings,
         )
-        return 0
+        return 1 if batch_result.get("error_count", 0) else 0
 
     # Validasi input file tunggal
     if not args.document:

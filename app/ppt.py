@@ -31,7 +31,11 @@ from .multi_page import (
     strip_page_markers,
 )
 from .prompts import get_vision_system_prompt
-from .tabular_db import cross_verify_dual_track, process_page_tabular_agent
+from .tabular_db import (
+    cross_verify_dual_track,
+    process_page_tabular_agent,
+    prune_document_pages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +384,7 @@ def process_presentation(
         )
 
     # Dual-track guardrail verification
+    prune_document_pages(db_out_path, src, len(slides))
     cross_verify_dual_track(
         stitched_markdown=stitched_md,
         db_path=db_out_path,
@@ -582,6 +587,7 @@ def process_presentation_vision(
     )
 
     # Jalankan Dual-track Guardrail Cross-Verification
+    prune_document_pages(db_out_path, src, len(slide_images))
     cross_verify_dual_track(
         stitched_markdown=stitched_md,
         db_path=db_out_path,

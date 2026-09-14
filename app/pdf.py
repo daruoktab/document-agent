@@ -26,7 +26,11 @@ from .multi_page import (
 )
 from .prompts import normalize_specs
 from .schemas import DocumentPage, ExtractedDocument, PageTabularEvent
-from .tabular_db import cross_verify_dual_track, process_page_tabular_agent
+from .tabular_db import (
+    cross_verify_dual_track,
+    process_page_tabular_agent,
+    prune_document_pages,
+)
 
 if TYPE_CHECKING:
     from .graph import DocumentExtractionPipeline
@@ -399,6 +403,7 @@ def process_multipage_pdf(
     # Jalur 3: Supervisor Guardrail Cross-Verification (Audit Markdown vs SQLite)
     guardrail_report = None
     if auto_tabular_db and resolved_db_path and resolved_db_path.exists():
+        prune_document_pages(resolved_db_path, str(pdf_path), total_pages)
         guardrail_report = cross_verify_dual_track(
             stitched_markdown=full_md,
             db_path=resolved_db_path,

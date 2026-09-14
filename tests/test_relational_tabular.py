@@ -11,7 +11,6 @@ from app.tabular_db import (
     defensive_map_columns,
     merge_and_deduplicate_tables,
     parse_date_value,
-    parse_numeric_value,
     process_page_tabular_agent,
 )
 
@@ -178,7 +177,7 @@ class TestRelationalTabularDB(unittest.TestCase):
             fingerprint_hash="fp_faktur_001",
             doc_title="Faktur Pajak Awal",
         )
-        id1 = self.mgr.ingest_document_header(h1)
+        self.mgr.ingest_document_header(h1)
 
         # Buat Header 2 secara manual dengan nomor & tipe sama (duplikat dari sumber file lain)
         with self.mgr._get_connection() as conn:

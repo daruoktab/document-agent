@@ -381,7 +381,7 @@ def render_mermaid_to_png(
         return False, None, "Kode Mermaid kosong"
 
     try:
-        from mmdc import LocalMermaidConverter
+        from mmdc import LocalMermaidConverter  # ty: ignore[unresolved-import]
     except ImportError:
         logger.warning("[Diagram:Render] Modul 'mmdc' (pymmdc) tidak ditemukan. Render visual dilewati.")
         return False, None, "Pustaka 'pymmdc' tidak terinstal"

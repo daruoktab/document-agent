@@ -22,8 +22,10 @@ import logging
 import re
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,7 @@ from typing import Any
 from langchain_core.language_models.chat_models import BaseChatModel
 
 logger = logging.getLogger("app.tabular_db")
+_active_connection: ContextVar[tuple[str, sqlite3.Connection] | None] = ContextVar("tabular_transaction", default=None)
 
 from .schemas import (
     DedupReport,
@@ -1052,6 +1055,10 @@ class TabularDatabaseManager:
     @contextmanager
     def _get_connection(self) -> Iterator[sqlite3.Connection]:
         """Buka koneksi SQLite dengan row factory dict dan pastikan selalu ditutup."""
+        active = _active_connection.get()
+        if active and active[0] == str(self.db_path.resolve()):
+            yield active[1]
+            return
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -1372,7 +1379,7 @@ class TabularDatabaseManager:
           - document_signatories: pihak-pihak penandatangan/persetujuan (FK header_id)
         """
         with self._get_connection() as conn:
-            conn.executescript("""
+            schema_sql = """
                 CREATE TABLE IF NOT EXISTS document_headers (
                     header_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     doc_type TEXT DEFAULT 'general_document',
@@ -1429,7 +1436,11 @@ class TabularDatabaseManager:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sig_header_id ON document_signatories(header_id);
                 CREATE INDEX IF NOT EXISTS idx_sig_row_hash ON document_signatories(_row_hash);
-            """)
+            """
+            # executescript melakukan commit implisit dan memutus transaksi penggantian halaman.
+            for statement in schema_sql.split(";"):
+                if statement.strip():
+                    conn.execute(statement)
 
     def ensure_columns_exist(
         self, table_name: str, required_columns: dict[str, str]
@@ -1595,7 +1606,7 @@ class TabularDatabaseManager:
                 balance = parse_numeric_value(str(bal_raw)) if bal_raw is not None else None
 
                 raw_row_values = "\x1f".join(clean_cell_text(str(value)) for value in r)
-                raw_hash_str = f"{header_id}|{txn_date or ''}|{desc}|{ref_no or ''}|{debit or 0}|{credit or 0}|{balance or 0}|{raw_row_values}"
+                raw_hash_str = f"{source_doc}|{page_number}|{header_id}|{txn_date or ''}|{desc}|{ref_no or ''}|{debit or 0}|{credit or 0}|{balance or 0}|{raw_row_values}"
                 row_hash = hashlib.sha256(raw_hash_str.encode("utf-8")).hexdigest()[:24]
 
                 vals: list[Any] = [
@@ -1690,7 +1701,7 @@ class TabularDatabaseManager:
                 sig_status = clean_cell_text(str(sig_raw or "")) if sig_raw else None
                 notes = clean_cell_text(str(notes_raw or "")) if notes_raw else None
 
-                raw_hash_str = f"{header_id}|{role or ''}|{name}|{position or ''}"
+                raw_hash_str = f"{source_doc}|{page_number}|{header_id}|{role or ''}|{name}|{position or ''}|{sig_date}|{sig_status}|{notes}"
                 row_hash = hashlib.sha256(raw_hash_str.encode("utf-8")).hexdigest()[:24]
 
                 vals: list[Any] = [
@@ -2232,7 +2243,53 @@ class TabularVerifier:
 # ==============================================================================
 
 
+def prune_document_pages(db_path: str | Path, source_file: str, total_pages: int) -> None:
+    """Buang baris halaman yang tidak lagi ada setelah ekstraksi dokumen berhasil."""
+    if not source_file or total_pages < 1:
+        return
+    manager = TabularDatabaseManager(db_path)
+    with manager._get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            columns = {r[1] for r in conn.execute(f'PRAGMA table_info({quoted})')}
+            if {'_source_doc', '_page_number'} <= columns:
+                conn.execute(f'DELETE FROM {quoted} WHERE _source_doc=? AND _page_number>?', (source_file, total_pages))
+
+
 def process_page_tabular_agent(
+    page_markdown: str,
+    page_number: int,
+    source_file: str = "",
+    db_path: str | Path | None = None,
+    table_name_prefix: str | None = None,
+    append_if_matching: bool = True,
+    force_all_tables: bool = False,
+    llm: BaseChatModel | None = None,
+) -> tuple[PageTabularEvent, list[TableIngestionResult]]:
+    """Ganti data halaman secara atomik; halaman dan dokumen lain tetap dipertahankan."""
+    manager = TabularDatabaseManager(db_path)
+    with manager._get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        token = _active_connection.set((str(manager.db_path.resolve()), conn))
+        try:
+            if source_file:
+                tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+                for table in tables:
+                    quoted = '"' + table.replace('"', '""') + '"'
+                    columns = {r[1] for r in conn.execute(f"PRAGMA table_info({quoted})")}
+                    if {"_source_doc", "_page_number"} <= columns:
+                        conn.execute(f"DELETE FROM {quoted} WHERE _source_doc=? AND _page_number=?", (source_file, page_number))
+            return _process_page_tabular_agent(
+                page_markdown, page_number, source_file, manager.db_path,
+                table_name_prefix, append_if_matching, force_all_tables, llm,
+            )
+        finally:
+            _active_connection.reset(token)
+
+
+def _process_page_tabular_agent(
     page_markdown: str,
     page_number: int,
     source_file: str = "",
@@ -2507,6 +2564,62 @@ def process_page_tabular_agent(
     return event, ingestion_results
 
 
+def _compare_table_values(manager: TabularDatabaseManager, md_tables: list[dict[str, Any]]) -> list[str]:
+    """Bandingkan multiset nilai kolom sumber dengan data SQL, tanpa bergantung urutan baris."""
+    discrepancies: list[str] = []
+    groups: dict[str, list[dict[str, str]]] = {}
+    with manager._get_connection() as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in md_tables:
+            headers = table['headers']
+            txn, txn_map, _ = defensive_map_columns(headers, TRANSACTION_CANONICAL_ALIASES, "transaction")
+            sig, sig_map, _ = defensive_map_columns(headers, SIGNATORY_CANONICAL_ALIASES, "signatory")
+            target = table.get('sqlite_table_hint')
+            mapping: dict[str, int] = {}
+            if target == 'transaction_details' or (not target and txn):
+                target, mapping = 'transaction_details', txn_map
+            elif target == 'document_signatories' or (not target and sig):
+                target, mapping = 'document_signatories', sig_map
+            elif not target:
+                match = manager.find_matching_table(headers)
+                target = match[0] if match else None
+            if not target or target not in tables:
+                continue
+            inverse = {index: name for name, index in mapping.items()}
+            columns = tuple(inverse.get(i, sanitize_identifier(h)) for i, h in enumerate(headers))
+            groups.setdefault(target, []).extend(
+                {column: row[i] if i < len(row) else '' for i, column in enumerate(columns)}
+                for row in table['rows']
+            )
+
+        for target, rows in groups.items():
+            columns = tuple(dict.fromkeys(column for row in rows for column in row))
+            if not columns:
+                continue
+            quoted = '"' + target.replace('"', '""') + '"'
+            types = {r[1]: r[2].upper() for r in conn.execute(f'PRAGMA table_info({quoted})')}
+            missing = set(columns) - types.keys()
+            if missing:
+                discrepancies.append(f"Tabel '{target}': kolom sumber tidak ditemukan di SQLite: {', '.join(sorted(missing))}.")
+                continue
+
+            def normalize(value: Any, column: str, from_sql: bool, *, column_types: dict[str, str] = types) -> str:
+                if column_types[column] in ('REAL', 'NUMERIC', 'INTEGER'):
+                    number = value if from_sql else parse_numeric_value(str(value))
+                    return '' if number is None else format(float(number), '.12g')
+                text = clean_cell_text(str(value)) if value is not None else ''
+                if column_types[column] == 'DATE' or column in ('txn_date', 'value_date', 'date'):
+                    text = parse_date_value(text) or text
+                return text or ''
+
+            expected = Counter(tuple(normalize(row.get(c, ''), c, False) for c in columns) for row in rows)
+            selected = ', '.join('"' + c.replace('"', '""') + '"' for c in columns)
+            actual = Counter(tuple(normalize(value, c, True) for value, c in zip(row, columns)) for row in conn.execute(f'SELECT {selected} FROM {quoted}'))
+            if expected != actual:
+                discrepancies.append(f"Tabel '{target}': isi nilai berbeda (baris sumber tidak cocok: {sum((expected - actual).values())}; baris SQL tidak cocok: {sum((actual - expected).values())}).")
+    return discrepancies
+
+
 def cross_verify_dual_track(
     stitched_markdown: str,
     db_path: str | Path | None,
@@ -2611,6 +2724,8 @@ def cross_verify_dual_track(
         discrepancies.append(
             f"Terdapat selisih baris signifikan: Markdown ({total_md_rows} baris) vs SQLite ({total_sqlite_rows} baris)."
         )
+
+    discrepancies.extend(_compare_table_values(db_manager, md_tables))
 
     # Tentukan status Guardrail Supervisor
     if not discrepancies and (total_sqlite_tables > 0 or total_md_tables == 0):

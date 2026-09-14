@@ -13,11 +13,16 @@ Fitur Utama:
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
-from typing import Any
 import sys
+from collections.abc import Sequence
+from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, Protocol
+from zipfile import ZIP_DEFLATED, ZipFile
 
 # Pastikan root direktori proyek berada di sys.path agar impor 'from app....' selalu dikenali
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -26,7 +31,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pandas as pd
 import streamlit as st
-from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+
+class UploadedFileLike(Protocol):
+    name: str
+
+    def getvalue(self) -> bytes: ...
 
 from app.job_tracker import JobManager, is_pid_alive
 from app.tabular_db import cross_verify_dual_track
@@ -34,11 +44,11 @@ from app.tabular_db import cross_verify_dual_track
 SUPPORTED_TYPES = ["pdf", "pptx", "ppt", "png", "jpg", "jpeg", "webp"]
 
 SPEC_OPTIONS: dict[str, str | None] = {
-    "Auto-Detect (Rekomendasi VLM)": None,
-    "Plain Document (Surat/Dokumen Standar)": "plain",
-    "Markdown Hierarchy (Bab, Sub-bab #, ##, ###)": "markdown_hierarchy",
-    "Bilingual Journal (2 Kolom & 2 Bahasa)": "bilingual_journal",
-    "Presentation Slides (Slide & Diagram Visual)": "presentation_slides",
+    "Pilih otomatis (disarankan)": None,
+    "Dokumen biasa, seperti surat atau laporan": "plain",
+    "Dokumen dengan bab dan subbab": "markdown_hierarchy",
+    "Jurnal dua kolom atau dua bahasa": "bilingual_journal",
+    "Slide presentasi": "presentation_slides",
 }
 
 
@@ -47,17 +57,21 @@ SPEC_OPTIONS: dict[str, str | None] = {
 # ==============================================================================
 
 
-def _save_uploaded_file(uploaded_file: UploadedFile, output_dir: Path) -> Path:
+def _save_uploaded_file(uploaded_file: UploadedFileLike, output_dir: Path) -> Path:
     """Simpan file yang diunggah ke direktori output/uploads secara stabil."""
     uploads_dir = output_dir / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    target_path = uploads_dir / Path(uploaded_file.name).name
-    target_path.write_bytes(uploaded_file.getvalue())
+    name = Path(uploaded_file.name.replace("\\", "/")).name
+    content = uploaded_file.getvalue()
+    identity = hashlib.sha256(name.encode("utf-8") + b"\0" + content).hexdigest()[:16]
+    target_path = uploads_dir / f"{Path(name).stem}_{identity}{Path(name).suffix.lower()}"
+    if not target_path.exists():
+        target_path.write_bytes(content)
     return target_path
 
 
 def _save_uploaded_files(
-    uploaded_files: list[UploadedFile] | tuple[UploadedFile, ...],
+    uploaded_files: Sequence[UploadedFileLike],
     output_dir: Path,
 ) -> list[Path]:
     """Simpan beberapa file upload dan kembalikan path dalam urutan pilihan user."""
@@ -178,6 +192,101 @@ def extract_mermaid_blocks(text: str) -> list[str]:
     return re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
 
 
+def find_pages_containing(pages: dict[int, str], query: str) -> list[int]:
+    """Kembalikan nomor halaman yang memuat kata pencarian tanpa membedakan kapital."""
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        return []
+    return [
+        page_number
+        for page_number, content in pages.items()
+        if normalized_query in content.casefold()
+    ]
+
+
+def build_document_zip(stem: str, output_dir: Path) -> bytes:
+    """Buat paket ZIP berisi seluruh hasil yang tersedia untuk satu dokumen."""
+    doc_dir = output_dir / stem
+    archive_buffer = BytesIO()
+    archived_paths: set[Path] = set()
+
+    with ZipFile(archive_buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "PETUNJUK.txt",
+            "Paket hasil ekstraksi dokumen.\n\n"
+            "- File .md berisi teks hasil ekstraksi.\n"
+            "- Folder csv dan databases berisi data tabel.\n"
+            "- Folder pages atau slides berisi gambar tiap halaman.\n"
+            "- Folder logs berisi catatan teknis proses.\n",
+        )
+
+        if doc_dir.exists():
+            for source_path in sorted(path for path in doc_dir.rglob("*") if path.is_file()):
+                archive.write(source_path, source_path.relative_to(doc_dir).as_posix())
+                archived_paths.add(source_path.resolve())
+
+        legacy_candidates = [
+            output_dir / f"{stem}.md",
+            output_dir / "databases" / f"{stem}.sqlite",
+            output_dir / "databases" / f"{stem}_data.sqlite",
+        ]
+        legacy_candidates.extend(get_document_images(stem, output_dir))
+        for source_path in legacy_candidates:
+            resolved_path = source_path.resolve()
+            if not source_path.is_file() or resolved_path in archived_paths:
+                continue
+            if source_path.parent == output_dir / "uploads":
+                archive_name = f"dokumen_asli/{source_path.name}"
+            elif source_path.suffix.lower() == ".md":
+                archive_name = f"teks/{source_path.name}"
+            elif source_path.suffix.lower() == ".sqlite":
+                archive_name = f"databases/{source_path.name}"
+            else:
+                archive_name = f"halaman/{source_path.name}"
+            archive.write(source_path, archive_name)
+            archived_paths.add(resolved_path)
+
+    return archive_buffer.getvalue()
+
+
+def table_csv_bytes(conn: sqlite3.Connection, table: str) -> bytes:
+    quoted = '"' + table.replace('"', '""') + '"'
+    return pd.read_sql_query(f"SELECT * FROM {quoted}", conn).to_csv(index=False).encode("utf-8-sig")
+
+
+def build_sqlite_download(db_file: Path) -> bytes:
+    """Snapshot konsisten, termasuk transaksi yang telah commit di WAL."""
+    source = sqlite3.connect(db_file.resolve().as_uri() + '?mode=ro', uri=True)
+    try:
+        with TemporaryDirectory(prefix='sqlite_download_') as directory:
+            path = Path(directory) / 'snapshot.sqlite'
+            snapshot = sqlite3.connect(path)
+            try:
+                source.backup(snapshot)
+                snapshot.execute('PRAGMA journal_mode=DELETE')
+            finally:
+                snapshot.close()
+            return path.read_bytes()
+    finally:
+        source.close()
+
+
+def build_all_tables_csv_zip(conn: sqlite3.Connection, tables: list[str]) -> bytes:
+    buffer = BytesIO()
+    used: set[str] = set()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for table in tables:
+            safe_name = re.sub(r'[^\w .-]', '_', table).strip('. ') or 'table'
+            name = safe_name + '.csv'
+            index = 2
+            while name in used:
+                name = f'{safe_name}_{index}.csv'
+                index += 1
+            used.add(name)
+            archive.writestr(name, table_csv_bytes(conn, table))
+    return buffer.getvalue()
+
+
 def render_mermaid_html(mermaid_code: str, height: int = 420) -> None:
     """Render diagram Mermaid interaktif dalam format SVG menggunakan Mermaid.js CDN."""
     html_code = f"""
@@ -268,7 +377,7 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
 
     # Progress bar & badge
     pct = job.progress_percentage()
-    st.markdown(f"### ⏳ Ekstraksi Berjalan: `{job.file_name or stem}`")
+    st.markdown(f"### ⏳ Sedang membaca: `{job.file_name or stem}`")
     st.progress(pct / 100.0, text=f"Progres: {pct:.1f}% — {job.stage}")
 
     # Kartu Metrik Granular
@@ -281,38 +390,27 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
         page_str = "Menyiapkan..."
 
     c1.metric("📄 Halaman / Slide", page_str)
-    c2.metric("🔄 Tahapan Proses", job.stage)
-    c3.metric("⚙️ PID Subprocess", str(job.pid or "-"))
+    c2.metric("🔄 Tahap saat ini", job.stage)
+    c3.metric("📊 Kemajuan", f"{pct:.0f}%")
     is_alive = is_pid_alive(job.pid) if job.pid else True
     c4.metric(
-        "🩺 Status Eksekusi",
+        "🩺 Kondisi",
         (
             "🟡 Menunggu antrean"
             if job.status == "queued"
-            else ("🟢 Berjalan Normal" if is_alive else "⚠️ Tidak Responsif")
+            else ("Berjalan" if is_alive else "Perlu diperiksa")
         ),
     )
 
     # Kotak informasi background safety & path file log fisik
     log_file_str = str(job.latest_log_path.resolve()) if job.latest_log_path else "output/logs/..."
-    st.info(
-        f"📂 **Lokasi Berkas Log Disk:** `{log_file_str}`\n\n"
-        f"📌 **Aktivitas Terakhir:** *{job.last_message or 'Menunggu baris pertama...'}*"
-    )
+    st.info(f"📌 Aktivitas terakhir: {job.last_message or 'Sedang menyiapkan proses...'}")
 
     # Tampilan log real-time streaming
-    st.markdown("##### 📜 Live Log Streaming (Terminal Subprocess):")
-    recent_log_text = job_manager.get_latest_logs(stem, line_count=35)
-    if not recent_log_text or recent_log_text == "(Belum ada log)":
-        recent_log_text = (
-            "(Sedang menginisialisasi subprocess Python .venv dan memuat dependensi Vision VLM...\n"
-            "Baris log pertama akan muncul di sini sesaat lagi...)"
-        )
-    st.code(recent_log_text, language="text")
-    st.caption(
-        f"💡 **Tips CLI:** Anda juga dapat memantau log langsung dari terminal PowerShell menggunakan: "
-        f"`Get-Content -Path '{log_file_str}' -Wait`"
-    )
+    with st.expander("Lihat detail teknis proses"):
+        st.caption(f"Lokasi log: `{log_file_str}` · ID proses: `{job.pid or '-'}`")
+        recent_log_text = job_manager.get_latest_logs(stem, line_count=35)
+        st.code(recent_log_text or "(Belum ada catatan proses)", language="text")
 
     # Aksi kontrol
     col_a1, col_a2 = st.columns([1, 1])
@@ -353,32 +451,40 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     # Header Ringkasan Dokumen
     col_top1, col_top2 = st.columns([3.5, 1.5])
     with col_top1:
-        st.subheader(f"📄 Hasil Ekstraksi: `{stem}`")
-        badge_pages = f"{len(images)} Halaman Fisik" if images else "Format Teks"
+        st.subheader(f"📄 Hasil dokumen: `{stem}`")
+        badge_pages = f"{len(images)} halaman/slide" if images else "Hasil teks"
         st.caption(
-            f"Status: **Selesai (Completed)** | {badge_pages} | Target Markdown: `{md_file.name}`"
+            f"Selesai diproses · {badge_pages} · File hasil: `{md_file.name}`"
         )
     with col_top2:
+        zip_data = build_document_zip(stem, output_path)
+        st.download_button(
+            "⬇️ Unduh semua hasil (.zip)",
+            data=zip_data,
+            file_name=f"{stem}_hasil.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
         if st.button("🔄 Ekstrak Ulang Dokumen Ini", use_container_width=True):
-            job_manager.reset_job(stem, output_dir=output_path)
+            job_manager.restart_job(stem, output_dir=output_path)
             st.rerun()
 
-    # Tab Utama (Fokus Ekstraksi, Verifikasi Dual-Track, Mermaid, & Tabular Studio)
+    # Label utama memakai bahasa berbasis tujuan pengguna; istilah teknis ada di detail.
     tab_inspector, tab_guardrail, tab_md, tab_sql, tab_log = st.tabs([
-        "🔍 Visual Page Inspector",
-        "🛡️ Dual-Track Guardrail Audit",
-        "📝 Markdown & Diagram Mermaid",
-        "📊 Data Tabular (SQLite & Chart)",
-        "📋 Run Log",
+        "🔍 Cocokkan dengan dokumen asli",
+        "✅ Periksa kelengkapan data",
+        "📝 Baca dan unduh teks",
+        "📊 Lihat tabel dan grafik",
+        "🔧 Detail proses",
     ])
 
     # --------------------------------------------------------------------------
     # TAB 1: VISUAL PAGE INSPECTOR (SIDE-BY-SIDE)
     # --------------------------------------------------------------------------
     with tab_inspector:
-        st.subheader("🔍 Side-by-Side Visual Document Inspector")
+        st.subheader("🔍 Cocokkan hasil dengan dokumen asli")
         st.caption(
-            "Verifikasi kesesuaian antara kanvas dokumen fisik (gambar asli hasil rasterisasi) dengan teks Markdown hasil ekstraksi Vision VLM."
+            "Bandingkan tampilan halaman asli di sebelah kiri dengan teks yang terbaca di sebelah kanan."
         )
 
         if images:
@@ -398,8 +504,8 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                     )
             with col_ctl2:
                 view_mode = st.radio(
-                    "Mode Teks Kolom Kanan:",
-                    ["Halaman Ini Saja", "Teks Utuh Dokumen"],
+                    "Teks yang ditampilkan:",
+                    ["Halaman ini", "Seluruh dokumen"],
                     horizontal=True,
                 )
 
@@ -414,11 +520,11 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 
             with col_img:
                 st.markdown(
-                    f"##### 🖼️ Kanvas Asli: Halaman {selected_page_idx} / {total_imgs}"
+                    f"##### 🖼️ Dokumen asli · halaman {selected_page_idx} dari {total_imgs}"
                 )
                 st.image(
                     str(current_img_path),
-                    caption=f"{current_img_path.name} (High-Res)",
+                    caption=current_img_path.name,
                     use_container_width=True,
                 )
                 with open(current_img_path, "rb") as f_img:
@@ -431,11 +537,11 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 
             with col_text:
                 st.markdown(
-                    f"##### ✍️ Hasil Ekstraksi Markdown: {'Halaman ' + str(selected_page_idx) if view_mode == 'Halaman Ini Saja' else 'Dokumen Lengkap'}"
+                    f"##### ✍️ Teks hasil · {'halaman ' + str(selected_page_idx) if view_mode == 'Halaman ini' else 'seluruh dokumen'}"
                 )
                 text_to_show = (
                     current_page_text
-                    if view_mode == "Halaman Ini Saja"
+                    if view_mode == "Halaman ini"
                     else md_content
                 )
 
@@ -443,15 +549,22 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                 page_mermaids = extract_mermaid_blocks(text_to_show)
                 if page_mermaids:
                     st.info(
-                        f"🎨 Terdeteksi {len(page_mermaids)} Diagram Alur (Mermaid) pada bagian ini."
+                        f"Terdapat {len(page_mermaids)} diagram pada bagian ini."
                     )
                     with st.expander(
-                        "Tampilkan Render SVG Diagram", expanded=True
+                        "Lihat diagram", expanded=True
                     ):
                         for m_code in page_mermaids:
                             render_mermaid_html(m_code, height=320)
 
                 st.markdown(text_to_show)
+
+            from app.learning_ui import render_correction_form
+            render_correction_form(
+                stem=stem, page=selected_page_idx, image_path=current_img_path,
+                original=pages_map.get(selected_page_idx, ""), images=images,
+                source_path=job.input_path if job else None,
+            )
         else:
             st.info(
                 "ℹ️ Gambar halaman fisik tidak ditemukan untuk dokumen ini (mungkin dokumen diproses tanpa menyimpan kanvas halaman terpisah)."
@@ -462,10 +575,16 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     # TAB 2: DUAL-TRACK GUARDRAIL AUDIT
     # --------------------------------------------------------------------------
     with tab_guardrail:
-        st.subheader("🛡️ Laporan Audit Guardrail Supervisor Jalur Ganda")
+        st.subheader("✅ Pemeriksaan kelengkapan data")
         st.caption(
-            "Agent Supervisor membandingkan konsistensi numerik Jalur 1 (Teks Dokumen Markdown) vs Jalur 2 (Database Relasional SQLite)."
+            "Sistem membandingkan tabel pada teks hasil dengan tabel yang tersimpan sebagai data."
         )
+        with st.expander("Bagaimana pemeriksaan ini bekerja?"):
+            st.write(
+                "Dokumen dibaca menjadi teks dan tabel terstruktur secara terpisah, lalu jumlah "
+                "tabel serta barisnya dibandingkan. Pemeriksaan ini membantu menemukan data yang "
+                "mungkin terlewat, tetapi tidak menggantikan pengecekan isi oleh pengguna."
+            )
 
         total_pages_detected = len(images) or (
             job.total_pages if job else len(pages_map) or 1
@@ -479,11 +598,11 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 
         # Status Banner
         if report.guardrail_status == "PASSED":
-            st.success(f"✅ **STATUS GUARDRAIL: PASSED** — {report.supervisor_notes}")
+            st.success(f"✅ **Data terlihat konsisten** — {report.supervisor_notes}")
         elif report.guardrail_status == "WARNING":
-            st.warning(f"⚠️ **STATUS GUARDRAIL: WARNING** — {report.supervisor_notes}")
+            st.warning(f"⚠️ **Ada bagian yang perlu diperiksa** — {report.supervisor_notes}")
         else:
-            st.error(f"❌ **STATUS GUARDRAIL: FAILED** — {report.supervisor_notes}")
+            st.error(f"❌ **Data belum konsisten** — {report.supervisor_notes}")
 
         # Metrik Rekonsiliasi
         m1, m2, m3, m4 = st.columns(4)
@@ -493,12 +612,12 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
         m4.metric("Baris Data SQLite", report.total_sqlite_rows)
 
         if report.discrepancies:
-            with st.expander("⚠️ Catatan Diskrepansi / Selisih", expanded=True):
+            with st.expander("⚠️ Bagian yang perlu diperiksa", expanded=True):
                 for disc in report.discrepancies:
                     st.markdown(f"- {disc}")
 
         if report.table_comparisons:
-            st.markdown("#### 📋 Tabel Komparasi Jalur Ganda")
+            st.markdown("#### 📋 Rincian perbandingan")
             df_comp = pd.DataFrame(report.table_comparisons)
             st.dataframe(df_comp, use_container_width=True)
         else:
@@ -510,8 +629,21 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     # TAB 3: MARKDOWN OUTPUT & MERMAID RENDERER
     # --------------------------------------------------------------------------
     with tab_md:
-        st.subheader("📝 Teks Dokumen (Markdown) & Visualisasi Diagram")
+        st.subheader("📝 Baca dan unduh teks")
         if md_content:
+            search_query = st.text_input(
+                "Cari kata atau frasa dalam dokumen",
+                placeholder="Contoh: nomor kontrak, nama kegiatan, total anggaran",
+            )
+            matched_pages = find_pages_containing(pages_map, search_query)
+            if search_query.strip():
+                if matched_pages:
+                    st.info(
+                        f"Ditemukan pada {len(matched_pages)} halaman/slide: "
+                        + ", ".join(str(page) for page in matched_pages)
+                    )
+                else:
+                    st.warning("Kata atau frasa tersebut tidak ditemukan.")
             st.download_button(
                 "💾 Unduh File Markdown (.md)",
                 data=md_content,
@@ -523,16 +655,16 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
             doc_mermaids = extract_mermaid_blocks(md_content)
             if doc_mermaids:
                 st.markdown(
-                    f"### 🎨 Visualisasi Diagram Mermaid ({len(doc_mermaids)} Diagram Ditemukan)"
+                    f"### 🎨 Diagram yang ditemukan ({len(doc_mermaids)})"
                 )
                 for idx, m_code in enumerate(doc_mermaids, 1):
                     with st.expander(
-                        f"📊 Diagram #{idx} (Render SVG Interaktif)",
+                        f"📊 Diagram {idx}",
                         expanded=True,
                     ):
                         render_mermaid_html(m_code, height=380)
-                        st.caption("Kode Sumber Mermaid:")
-                        st.code(m_code, language="mermaid")
+                        with st.expander("Lihat kode diagram"):
+                            st.code(m_code, language="mermaid")
                         st.download_button(
                             f"⬇️ Unduh Kode Diagram #{idx} (.mmd)",
                             data=m_code,
@@ -550,9 +682,16 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     # TAB 4: SQL TABULAR STUDIO & CHARTING
     # --------------------------------------------------------------------------
     with tab_sql:
-        st.subheader("📊 Penjelajah Database SQLite & Visual Charting")
+        st.subheader("📊 Lihat tabel dan buat grafik")
         if db_file is not None and db_file.exists():
-            st.write(f"📁 Path Database: `{db_file}`")
+            with st.expander("Informasi file data"):
+                st.write(f"Lokasi database: `{db_file}`")
+                st.download_button(
+                    "⬇️ Unduh seluruh database (.sqlite)",
+                    data=build_sqlite_download(db_file),
+                    file_name=db_file.name,
+                    mime="application/vnd.sqlite3",
+                )
             try:
                 conn = sqlite3.connect(str(db_file))
                 cursor = conn.cursor()
@@ -562,6 +701,13 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                 tables = [r[0] for r in cursor.fetchall()]
 
                 if tables:
+                    st.download_button(
+                        "⬇️ Unduh Semua CSV (.ZIP)",
+                        data=build_all_tables_csv_zip(conn, tables),
+                        file_name=f"{stem}_csv.zip",
+                        mime="application/zip",
+                        key=f"all_csv_{stem}",
+                    )
                     if "document_headers" in tables and "transaction_details" in tables:
                         with st.expander("📑 Tampilan Relasional Header & Detail Transaksi", expanded=False):
                             df_hdr = pd.read_sql_query("SELECT * FROM document_headers;", conn)
@@ -605,9 +751,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                             f"**Pratinjau Tabel: `{selected_tbl}` ({len(df_preview)} baris)**"
                         )
                     with col_t2:
-                        csv_data = df_preview.to_csv(index=False).encode(
-                            "utf-8"
-                        )
+                        csv_data = table_csv_bytes(conn, selected_tbl)
                         st.download_button(
                             "⬇️ Unduh Tabel (.CSV)",
                             data=csv_data,
@@ -618,9 +762,9 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                     st.dataframe(df_preview, use_container_width=True)
 
                     # Fitur Deduplikasi & Pembersihan Data
-                    with st.expander("🧹 Deduplikasi & Konsolidasi Data"):
-                        st.caption("Deteksi baris-baris identik atau mirip dari multiple sumber, gabungkan nilai non-null, dan bersihkan duplikasi.")
-                        if st.button(f"Jalankan Merge & Deduplikasi pada '{selected_tbl}'", key=f"btn_dedup_{selected_tbl}"):
+                    with st.expander("🧹 Bersihkan data ganda"):
+                        st.caption("Cari baris yang sama atau mirip, lalu gabungkan data yang saling melengkapi.")
+                        if st.button(f"Bersihkan data ganda pada '{selected_tbl}'", key=f"btn_dedup_{selected_tbl}"):
                             from app.tabular_db import merge_and_deduplicate_tables
                             report = merge_and_deduplicate_tables(db_file, selected_tbl)
                             st.success(f"{report.details}")
@@ -632,14 +776,14 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                     ).columns.tolist()
                     if num_cols:
                         with st.expander(
-                            "📈 Visualisasi Grafik Cepat (Auto-Chart)",
+                            "📈 Buat grafik dari tabel ini",
                             expanded=False,
                         ):
                             c_type, c_x, c_y = st.columns(3)
                             with c_type:
                                 chart_type = st.selectbox(
                                     "Jenis Grafik:",
-                                    ["Bar Chart", "Line Chart", "Area Chart"],
+                                    ["Grafik batang", "Grafik garis", "Grafik area"],
                                     key=f"ct_{selected_tbl}",
                                 )
                             with c_x:
@@ -659,20 +803,22 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                             if x_col:
                                 chart_df = chart_df.set_index(x_col)
 
-                            if chart_type == "Bar Chart":
+                            if chart_type == "Grafik batang":
                                 st.bar_chart(chart_df[[y_col]])
-                            elif chart_type == "Line Chart":
+                            elif chart_type == "Grafik garis":
                                 st.line_chart(chart_df[[y_col]])
-                            elif chart_type == "Area Chart":
+                            elif chart_type == "Grafik area":
                                 st.area_chart(chart_df[[y_col]])
 
                     # Konsol SQL Query
-                    st.markdown("#### ⚡ Konsol Query SQL")
-                    default_query = f"SELECT * FROM '{selected_tbl}' LIMIT 10;"
-                    user_query = st.text_area(
-                        "Tulis query SELECT:", value=default_query, height=75
-                    )
-                    if st.button("Jalankan Query", type="primary"):
+                    with st.expander("🔧 Pencarian lanjutan dengan SQL"):
+                        st.caption("Fitur ini ditujukan untuk pengguna yang memahami query SQL.")
+                        default_query = f"SELECT * FROM '{selected_tbl}' LIMIT 10;"
+                        user_query = st.text_area(
+                            "Tulis query SELECT:", value=default_query, height=75
+                        )
+                        run_query = st.button("Jalankan query", type="primary")
+                    if run_query:
                         try:
                             if not user_query.strip().upper().startswith(
                                 "SELECT"
@@ -708,7 +854,8 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     # TAB 5: RUN LOG
     # --------------------------------------------------------------------------
     with tab_log:
-        st.subheader("📋 Log Eksekusi Lengkap")
+        st.subheader("🔧 Detail proses")
+        st.caption("Catatan teknis ini berguna saat menelusuri masalah ekstraksi.")
         log_file = (
             job.latest_log_path
             if job and job.latest_log_path.exists()
@@ -738,7 +885,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 def main() -> None:
     """Titik masuk utama aplikasi Streamlit."""
     st.set_page_config(
-        page_title="Vision VLM & Dual-Track Sub-Agent Workspace",
+        page_title="Pengolah Dokumen AI",
         page_icon="📑",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -753,10 +900,8 @@ def main() -> None:
 
     # Sidebar: Konfigurasi Pipeline & Navigasi Dokumen
     with st.sidebar:
-        st.title("📑 Document AI Studio")
-        st.caption(
-            "Vision VLM, SQL Tabular & Dual-Track Guardrail Studio"
-        )
+        st.title("📑 Pengolah Dokumen AI")
+        st.caption("Ubah PDF, presentasi, dan gambar menjadi teks serta tabel yang siap digunakan.")
 
         all_docs = job_manager.list_all_documents(output_dir=output_dir)
 
@@ -786,12 +931,12 @@ def main() -> None:
                     selected_label_idx = idx
                     break
 
-        st.markdown("### 📂 Navigasi Dokumen")
+        st.markdown("### 📂 Dokumen")
         chosen_label = st.selectbox(
-            "Pilih Dokumen Aktif:",
+            "Pilih dokumen:",
             options=list(doc_options.keys()),
             index=selected_label_idx,
-            help="Bebas F5/Reload: Anda dapat memilih dokumen yang pernah diekstrak kapan saja tanpa perlu mengunggah ulang.",
+            help="Dokumen yang pernah diproses tetap tersedia setelah halaman dimuat ulang.",
         )
         new_selected_stem = doc_options[chosen_label]
 
@@ -800,24 +945,27 @@ def main() -> None:
             st.rerun()
 
         st.markdown("---")
-        st.header("⚙️ Konfigurasi Pipeline")
+        st.header("⚙️ Pengaturan ekstraksi")
         spec_label = st.selectbox(
-            "Jenis Dokumen / Layout:", list(SPEC_OPTIONS.keys())
+            "Bentuk dokumen:",
+            list(SPEC_OPTIONS.keys()),
+            help="Biarkan pilihan otomatis jika Anda tidak yakin.",
         )
         chosen_spec = SPEC_OPTIONS[spec_label]
 
         with st.expander("Pengaturan Lanjutan", expanded=False):
             dpi_val = st.slider(
-                "DPI Raster Rendering (PDF/PPT):", 100, 300, 200, 25
+                "Ketajaman gambar (PDF/PPT):", 100, 300, 200, 25,
+                help="Nilai lebih tinggi dapat membantu dokumen kecil atau buram, tetapi prosesnya lebih lama.",
             )
             force_all_tbl = st.checkbox(
-                "Paksa Ingesti Seluruh Tabel ke SQLite",
+                "Simpan semua jenis tabel",
                 value=False,
-                help="Jika dicentang, tabel naratif/kualitatif juga dimasukkan ke SQLite di samping tabel transaksional.",
+                help="Aktifkan jika tabel deskriptif juga perlu disimpan sebagai data terstruktur.",
             )
 
         st.markdown("---")
-        st.markdown("#### 🕒 Riwayat Dokumen Cepat")
+        st.markdown("#### 🕒 Dokumen terbaru")
         if all_docs:
             for doc in all_docs[:6]:
                 stem = doc["stem"]
@@ -851,34 +999,32 @@ def main() -> None:
         # MODE 1: UNGGAH DOKUMEN BARU
         st.subheader("📤 Unggah Dokumen Baru")
         st.caption(
-            "Mendukung format PDF multi-halaman, presentasi PPTX/PPT, dan gambar resolusi tinggi."
+            "1. Pilih file · 2. Sesuaikan pengaturan bila perlu · 3. Mulai ekstraksi. "
+            "Mendukung PDF, PPTX/PPT, PNG, JPG, dan WebP."
         )
 
         uploaded_files = st.file_uploader(
             "Pilih file dokumen:",
             type=SUPPORTED_TYPES,
             accept_multiple_files=True,
-            help="File akan disimpan secara aman di output/uploads/ dan dieksekusi di latar belakang.",
+            help="Anda dapat memilih beberapa file sekaligus. Proses tetap berjalan saat berpindah halaman.",
         )
 
         if uploaded_files:
             saved_files = _save_uploaded_files(uploaded_files, output_dir)
             st.markdown(f"**{len(saved_files)} file siap diproses**")
+            uploaded_rows = []
+            for path in saved_files:
+                existing_job = job_manager.get_job(path.stem, output_dir=output_dir)
+                uploaded_rows.append(
+                    {
+                        "File": path.name,
+                        "Ukuran": f"{path.stat().st_size / 1024:.1f} KB",
+                        "Status": existing_job.status if existing_job else "siap",
+                    }
+                )
             st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "File": path.name,
-                            "Ukuran": f"{path.stat().st_size / 1024:.1f} KB",
-                            "Status": (
-                                job_manager.get_job(path.stem, output_dir=output_dir).status
-                                if job_manager.get_job(path.stem, output_dir=output_dir)
-                                else "siap"
-                            ),
-                        }
-                        for path in saved_files
-                    ]
-                ),
+                pd.DataFrame(uploaded_rows),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -938,7 +1084,7 @@ def main() -> None:
             col_f1, col_f2 = st.columns([1, 1])
             with col_f1:
                 if st.button("🔄 Coba Ekstrak Ulang", type="primary", use_container_width=True):
-                    job_manager.reset_job(active_stem, output_dir=output_dir)
+                    job_manager.restart_job(active_stem, output_dir=output_dir)
                     st.rerun()
             with col_f2:
                 if st.button("➕ Beralih ke Unggah Dokumen Lain", use_container_width=True):

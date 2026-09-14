@@ -300,7 +300,7 @@ def batch_extract_documents(
 
     successful_count = sum(1 for r in processed_results if r["status"] == "success")
     return {
-        "status": "completed",
+        "status": "completed" if successful_count == len(files_to_process) else ("partial_failure" if successful_count else "failed"),
         "total_selected_files": len(files_to_process),
         "successful_count": successful_count,
         "error_count": len(files_to_process) - successful_count,

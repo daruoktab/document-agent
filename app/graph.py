@@ -417,6 +417,23 @@ class DocumentExtractionPipeline:
 
         # 1. Satukan blok diagram Mermaid ke Markdown jika belum ada
         combined_md = md_text
+        if mermaid_code:
+            from .diagram import sanitize_mermaid_code, validate_mermaid_syntax
+
+            # Ganti draft yang rusak dengan hasil spesialis yang sudah valid.
+            specialist = sanitize_mermaid_code(mermaid_code)
+            if specialist and validate_mermaid_syntax(specialist)[0]:
+                replaced = False
+
+                def recover_invalid(m: re.Match) -> str:
+                    nonlocal replaced
+                    draft_code = sanitize_mermaid_code(m.group(1))
+                    if not replaced and (not draft_code or not validate_mermaid_syntax(draft_code)[0]):
+                        replaced = True
+                        return f"```mermaid\n{specialist}\n```"
+                    return m.group(0)
+
+                combined_md = re.sub(r"```mermaid\s*([\s\S]*?)\s*```", recover_invalid, combined_md, flags=re.IGNORECASE)
         if mermaid_code and "```mermaid" not in combined_md:
             mermaid_block = f"\n\n```mermaid\n{mermaid_code}\n```"
             if diag_summary:
@@ -452,6 +469,17 @@ class DocumentExtractionPipeline:
         from .tabular_db import sanitize_markdown_tables
 
         final_md = sanitize_markdown_tables(final_md)
+        original_blocks = re.findall(r"```mermaid\s*([\s\S]*?)\s*```", combined_md, re.IGNORECASE)
+        final_blocks = re.findall(r"```mermaid\s*([\s\S]*?)\s*```", final_md, re.IGNORECASE)
+
+        def valid_block(code: str) -> bool:
+            sanitized = sanitize_mermaid_code(code)
+            return bool(sanitized and validate_mermaid_syntax(sanitized)[0])
+
+        if original_blocks and all(valid_block(code) for code in original_blocks) and (
+            len(final_blocks) < len(original_blocks) or not all(valid_block(code) for code in final_blocks)
+        ):
+            final_md = sanitize_markdown_tables(combined_md)
 
         def _clean_mermaid_in_md(m: re.Match) -> str:
             raw_code = m.group(1)
@@ -460,8 +488,7 @@ class DocumentExtractionPipeline:
                 is_valid, _ = validate_mermaid_syntax(sanitized)
                 if is_valid:
                     return f"```mermaid\n{sanitized}\n```"
-            # Jika tidak valid setelah dicoba sanitasi, fallback ke deskripsi visual terstruktur
-            return "> **[Diagram/Visual]:** Diagram visual terdeteksi pada dokumen."
+            return "> **[Diagram/Visual]:** Diagram visual terdeteksi; kode Mermaid tidak valid."
 
         final_md = re.sub(
             r"```mermaid\s*([\s\S]*?)\s*```",

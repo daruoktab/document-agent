@@ -18,8 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from .pdf import pdf_page_count, pdf_to_images
-from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
 from .ppt import count_presentation_slides, render_presentation_slides_to_images
+from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
 from .tabular_db import extract_and_ingest_tables_from_markdown
 
 logger = logging.getLogger(__name__)

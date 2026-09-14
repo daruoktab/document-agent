@@ -8,6 +8,11 @@ version = "0.1.0"
 description = "Vision VLM & Document Text Extractor (Structured Markdown, SQLite Tabular, & Mermaid Diagrams)"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115",
+    "python-multipart>=0.0.18",
+    "uvicorn>=0.30",
+    "dspy==3.3.1",
+    "gepa==0.1.4",
     "deepagents>=0.7.5",
     "langchain>=1.3",
     "langchain-core>=1.5.6",

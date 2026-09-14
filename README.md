@@ -7,6 +7,13 @@ Sistem ekstraksi **dokumen internal perusahaan** (PDF, PPT/PPTX, Scan Gambar, Sc
 
 ---
 
+## Pembelajaran dari koreksi pengguna
+
+Streamlit menyediakan **Koreksi hasil halaman ini** untuk menyimpan perbaikan teks dan tabel.
+Contoh yang disetujui dapat dipakai admin untuk optimasi prompt dengan DSPy dan GEPA,
+evaluasi pada dokumen terpisah, penerapan kandidat, dan pemulihan versi sebelumnya.
+Lihat [panduan pembelajaran dan perintah admin](docs/PEMBELAJARAN.md).
+
 ## 🛠️ Instalasi & Persyaratan Sistem (Installation & Setup)
 
 ### 1. Persyaratan Sistem (Prerequisites)
@@ -320,6 +327,13 @@ python main.py dokumen.pdf --debug
 > ℹ️ **Deep Agent (`--agent`) telah dihapus dari CLI** karena redundan — pipeline default sudah melakukan semua hal yang sama (auto-klasifikasi, diagram, SQLite, judge) lebih cepat dan deterministik. Deep Agent tetap tersedia via **MCP Server** untuk use case conversational (instruksi bebas, query SQLite interaktif).
 
 ---
+
+## API ingest dengan FastAPI
+
+Jalankan `uv sync`, lalu `uv run uvicorn app.api:app --port 8000`.
+`POST /ingest` menerima hanya field upload `file` dan mengembalikan ZIP berisi
+Markdown, SQL SQLite, serta CSV jika ada tabel. Buka `/docs` untuk mencoba API
+dan `/plan` untuk melihat alur ingest. Lihat [panduan API](docs/API.md).
 
 ## 🖥️ Antarmuka Interaktif Streamlit Workspace Studio
 

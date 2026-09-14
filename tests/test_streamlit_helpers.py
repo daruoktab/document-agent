@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 from app.streamlit_logic import (
+    build_document_zip,
     extract_mermaid_blocks,
+    find_pages_containing,
     get_document_images,
     split_markdown_by_pages,
 )
@@ -66,6 +70,13 @@ class TestStreamlitHelpers(unittest.TestCase):
         self.assertIn("graph TD;", diagrams[0])
         self.assertIn("sequenceDiagram", diagrams[1])
 
+    def test_find_pages_containing_is_case_insensitive(self) -> None:
+        pages = {1: "Nomor Kontrak: ABC-123", 2: "Rincian anggaran kegiatan"}
+
+        self.assertEqual(find_pages_containing(pages, "kontrak"), [1])
+        self.assertEqual(find_pages_containing(pages, "ANGGARAN"), [2])
+        self.assertEqual(find_pages_containing(pages, "  "), [])
+
     def test_get_document_images_pages_and_slides(self) -> None:
         stem = "doc_test"
         doc_dir = self.temp_dir / stem
@@ -78,6 +89,31 @@ class TestStreamlitHelpers(unittest.TestCase):
         self.assertEqual(len(imgs), 2)
         self.assertEqual(imgs[0].name, "page_0001.png")
         self.assertEqual(imgs[1].name, "page_0002.png")
+
+    def test_build_document_zip_contains_all_document_results(self) -> None:
+        stem = "laporan"
+        doc_dir = self.temp_dir / stem
+        (doc_dir / "pages").mkdir(parents=True)
+        (doc_dir / "databases").mkdir()
+        (doc_dir / "csv").mkdir()
+        (doc_dir / f"{stem}.md").write_text("# Hasil", encoding="utf-8")
+        (doc_dir / "pages" / "page_0001.png").write_bytes(b"png")
+        (doc_dir / "databases" / f"{stem}.sqlite").write_bytes(b"sqlite")
+        (doc_dir / "csv" / "tabel.csv").write_text("nilai\n1", encoding="utf-8")
+
+        zip_data = build_document_zip(stem, self.temp_dir)
+
+        with ZipFile(BytesIO(zip_data)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {
+                    "PETUNJUK.txt",
+                    f"{stem}.md",
+                    "pages/page_0001.png",
+                    f"databases/{stem}.sqlite",
+                    "csv/tabel.csv",
+                },
+            )
 
 
 if __name__ == "__main__":

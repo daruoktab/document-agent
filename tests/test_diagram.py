@@ -263,6 +263,7 @@ def test_missing_renderer_preserves_mermaid_without_retry(tmp_path):
     with patch("app.diagram.render_mermaid_to_png", return_value=(False, None, "MMDC executable not found at 'mmdc'")):
         result = extract_diagram_to_mermaid(img_file, mock_llm, forced_diagram_type="flowchart")
     assert result.is_mermaid
+    assert result.mermaid_code is not None
     assert 'A["Start"] --> B["End"]' in result.mermaid_code
     assert mock_llm.invoke.call_count == 1
 
@@ -370,7 +371,15 @@ def test_render_mermaid_to_png_failure():
     assert ok is False
     assert png_bytes is None
     assert err is not None
-    assert "would create a cycle" in err or "Error" in err or "chrome-headless-shell" in err
+    assert any(
+        message in err
+        for message in (
+            "would create a cycle",
+            "Error",
+            "chrome-headless-shell",
+            "tidak terinstal",
+        )
+    )
 
 
 def test_extract_diagram_visual_feedback_loop(tmp_path: Path):

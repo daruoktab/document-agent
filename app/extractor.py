@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -47,6 +49,20 @@ class VisionExtractor:
     ) -> None:
         self.llm: BaseChatModel = llm
         self.system_prompt: str = system_prompt
+        self.learning_version = "baseline"
+        self.learning_program: Any = None
+        self.learning_lm: Any = None
+        from .learning_store import LearningStore
+        self.learning_store = LearningStore()
+        active = self.learning_store.active_run()
+        if active and system_prompt == SYSTEM_DOCUMENT_EXTRACTOR:
+            from .dspy_learning import PageProgram, build_learning_lm, model_fingerprint
+            if active["model_fingerprint"] == model_fingerprint():
+                self.learning_program = PageProgram(active["instructions"])
+                self.learning_lm = build_learning_lm()
+                self.learning_version = active["id"]
+            else:
+                logger.warning("Konfigurasi model berubah; memakai prompt bawaan.")
 
     def classify(self, image_path: str) -> list[str]:
         """
@@ -369,8 +385,15 @@ class VisionExtractor:
             HumanMessage(content=cast(Any, content)),
         ]
 
-        response = self.llm.invoke(messages)
-        raw_content = str(response.content or "").strip()
+        if self.learning_program is not None:
+            import dspy
+
+            from .dspy_learning import predict_page
+            raw_content = predict_page(self.learning_program, self.learning_lm,
+                                       dspy.Image.from_path(image_path), user_prompt)
+        else:
+            response = self.llm.invoke(messages)
+            raw_content = str(response.content or "").strip()
         md_text = strip_thinking_process(raw_content)
 
         # Bersihkan pembungkus markdown block ```markdown ... ``` jika VLM membungkusnya
@@ -393,4 +416,9 @@ class VisionExtractor:
             raise EmptyLLMResponseError(
                 f"Respons LLM kosong saat mengekstrak Markdown: {image_path}"
             )
+        if Path(image_path).is_file():
+            try:
+                self.learning_store.observe(image_path, md_text, user_prompt, self.learning_version)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                logger.warning("Metadata koreksi tidak tersimpan: %s", type(exc).__name__)
         return md_text
