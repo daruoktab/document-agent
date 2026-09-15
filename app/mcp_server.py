@@ -29,6 +29,8 @@ from .diagram import (
 from .diagram import (
     extract_diagram_to_mermaid as run_extract_diagram,
 )
+from .docx import process_multipage_docx
+from .excel import process_multipage_excel
 from .extractor import VisionExtractor
 from .graph import DocumentExtractionPipeline
 from .llm import build_vlm
@@ -45,7 +47,7 @@ from .tabular_db import (
 # Inisialisasi Server MCP
 server = MCPServer(
     name="jds-magang-vlm-agent",
-    description="Vision VLM Document Extractor MCP Server: PDF, PPTX, Scan -> Markdown Terstruktur, SQLite Tabular Engine, & Mermaid Diagrams",
+    description="Vision VLM Document Extractor MCP Server: PDF, DOCX, Excel, PPTX, Scan -> Markdown Terstruktur, SQLite Tabular Engine, & Mermaid Diagrams",
     version="0.1.0",
 )
 
@@ -91,7 +93,7 @@ def render_presentation_slides(
 
 @server.tool(
     name="scan_document_folders",
-    description="Pindai direktori input rekursif untuk menemukan dan mengelompokkan seluruh file PDF, PPTX, PPT, dan Gambar.",
+    description="Pindai direktori input rekursif untuk menemukan dan mengelompokkan seluruh file PDF, DOCX, DOC, Excel, PPTX, PPT, dan Gambar.",
 )
 def scan_document_folders(base_path: str = "dataset") -> str:
     """
@@ -166,7 +168,7 @@ def process_document_batch(
 
 @server.tool(
     name="extract_document",
-    description="Ekstrak satu dokumen (PDF, PPTX, PPT, atau Gambar) menjadi teks Markdown bersih.",
+    description="Ekstrak satu dokumen (PDF, DOCX, Excel, PPTX, PPT, atau Gambar) menjadi teks Markdown bersih.",
 )
 def extract_document(
     file_path: str,
@@ -186,14 +188,16 @@ def extract_document(
 
     if use_agent:
         agent = build_deep_agent(settings)
-        res = agent.invoke({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"Ekstrak dokumen berikut ke Markdown bersih: {path_obj}",
-                }
-            ]
-        })
+        res = agent.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"Ekstrak dokumen berikut ke Markdown bersih: {path_obj}",
+                    }
+                ]
+            }
+        )
         return res.get("messages", [])[-1].content if res.get("messages") else ""
 
     try:
@@ -201,6 +205,18 @@ def extract_document(
 
         if ext == ".pdf":
             doc = process_multipage_pdf(
+                path_obj, pipeline=pipeline, forced_specs=specs, dpi=dpi
+            )
+            return doc.full_markdown
+
+        if ext in {".docx", ".doc"}:
+            doc = process_multipage_docx(
+                path_obj, pipeline=pipeline, forced_specs=specs, dpi=dpi
+            )
+            return doc.full_markdown
+
+        if ext in {".xlsx", ".xls", ".xlsm", ".ods"}:
+            doc = process_multipage_excel(
                 path_obj, pipeline=pipeline, forced_specs=specs, dpi=dpi
             )
             return doc.full_markdown
@@ -294,7 +310,9 @@ def extract_diagram_to_mermaid(
     try:
         proc = preprocess_image(str(path_obj))
         vlm = build_vlm(settings)
-        res = run_extract_diagram(proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint)
+        res = run_extract_diagram(
+            proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint
+        )
         payload = res.model_dump()
         rendered_bytes = payload.pop("rendered_image_bytes", None)
         if rendered_bytes is not None:

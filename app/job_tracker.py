@@ -886,6 +886,17 @@ class JobManager:
         docs.sort(key=lambda d: (d["status"] in {"queued", "running"}, d["mtime"]), reverse=True)
         return docs
 
+    def get_active_job_counts(self, output_dir: Path) -> dict[str, int]:
+        """Hitung job ingest aktif yang berjalan atau menunggu slot VLM."""
+        documents = self.list_all_documents(output_dir)
+        running = sum(document["status"] == "running" for document in documents)
+        queued = sum(document["status"] == "queued" for document in documents)
+        return {
+            "running": running,
+            "queued": queued,
+            "active": running + queued,
+        }
+
     def get_latest_logs(self, stem: str, line_count: int = 40) -> str:
         """Ambil potongan baris log terakhir (dari memori atau langsung dari file)."""
         job = self.get_job(stem)

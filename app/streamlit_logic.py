@@ -38,11 +38,26 @@ class UploadedFileLike(Protocol):
 
     def getvalue(self) -> bytes: ...
 
+
 from app.job_tracker import JobManager, is_pid_alive
 from app.tabular_db import cross_verify_dual_track
 from app.upload_batches import create_batch, list_batches
 
-SUPPORTED_TYPES = ["pdf", "pptx", "ppt", "png", "jpg", "jpeg", "webp"]
+SUPPORTED_TYPES = [
+    "pdf",
+    "docx",
+    "doc",
+    "xlsx",
+    "xls",
+    "xlsm",
+    "ods",
+    "pptx",
+    "ppt",
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+]
 
 SPEC_OPTIONS: dict[str, str | None] = {
     "Pilih otomatis (disarankan)": None,
@@ -86,7 +101,12 @@ def _save_uploaded_files(
     output_dir: Path,
 ) -> list[Path]:
     """Simpan beberapa file upload dan kembalikan path dalam urutan pilihan user."""
-    return list(dict.fromkeys(_save_uploaded_file(uploaded_file, output_dir) for uploaded_file in uploaded_files))
+    return list(
+        dict.fromkeys(
+            _save_uploaded_file(uploaded_file, output_dir)
+            for uploaded_file in uploaded_files
+        )
+    )
 
 
 def _get_sqlite_db_for_file(file_stem: str, output_dir: Path) -> Path | None:
@@ -122,18 +142,14 @@ def get_document_images(stem: str, output_dir: Path) -> list[Path]:
     # 1. Cek folder pages (PDF)
     pages_dir = doc_dir / "pages"
     if pages_dir.exists():
-        imgs = sorted(
-            list(pages_dir.glob("*.png")) + list(pages_dir.glob("*.jpg"))
-        )
+        imgs = sorted(list(pages_dir.glob("*.png")) + list(pages_dir.glob("*.jpg")))
         if imgs:
             return imgs
 
     # 2. Cek folder slides (PPT)
     slides_dir = doc_dir / "slides"
     if slides_dir.exists():
-        imgs = sorted(
-            list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg"))
-        )
+        imgs = sorted(list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg")))
         if imgs:
             return imgs
 
@@ -154,9 +170,7 @@ def split_markdown_by_pages(markdown_text: str) -> dict[int, str]:
 
     # 1. Pola standar multi-halaman: <!-- PAGE: X -->
     matches = list(
-        re.finditer(
-            r"<!--\s*PAGE:\s*(\d+)\s*-->", markdown_text, re.IGNORECASE
-        )
+        re.finditer(r"<!--\s*PAGE:\s*(\d+)\s*-->", markdown_text, re.IGNORECASE)
     )
     if matches:
         prefix_text = markdown_text[: matches[0].start()].strip()
@@ -164,9 +178,7 @@ def split_markdown_by_pages(markdown_text: str) -> dict[int, str]:
             p_num = int(match.group(1))
             start_idx = match.end()
             end_idx = (
-                matches[i + 1].start()
-                if i + 1 < len(matches)
-                else len(markdown_text)
+                matches[i + 1].start() if i + 1 < len(matches) else len(markdown_text)
             )
             content = markdown_text[start_idx:end_idx].strip()
             if i == 0 and prefix_text:
@@ -247,7 +259,9 @@ def build_document_zip(stem: str, output_dir: Path) -> bytes:
         )
 
         if doc_dir.exists():
-            for source_path in sorted(path for path in doc_dir.rglob("*") if path.is_file()):
+            for source_path in sorted(
+                path for path in doc_dir.rglob("*") if path.is_file()
+            ):
                 archive.write(source_path, source_path.relative_to(doc_dir).as_posix())
                 archived_paths.add(source_path.resolve())
 
@@ -286,7 +300,9 @@ def build_batch_zip(batch: dict[str, Any], output_dir: Path) -> bytes:
                 raise ValueError("Identitas dokumen tidak valid")
             with ZipFile(BytesIO(build_document_zip(stem, output_dir))) as document_zip:
                 for entry in document_zip.infolist():
-                    archive.writestr(f"{stem}/{entry.filename}", document_zip.read(entry))
+                    archive.writestr(
+                        f"{stem}/{entry.filename}", document_zip.read(entry)
+                    )
     return buffer.getvalue()
 
 
@@ -294,15 +310,24 @@ def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
     st.subheader(batch["name"])
     st.caption(f"Dibuat {batch['created_at']} · {len(batch['documents'])} dokumen unik")
     manager = JobManager.get_instance()
-    jobs = [manager.get_job(doc["stem"], output_dir=output_dir) for doc in batch["documents"]]
+    jobs = [
+        manager.get_job(doc["stem"], output_dir=output_dir)
+        for doc in batch["documents"]
+    ]
     busy = any(job and job.status in {"queued", "running"} for job in jobs)
     completed = sum(bool(job and job.status == "completed") for job in jobs)
     st.write(f"{completed} dari {len(jobs)} dokumen selesai")
     if busy:
-        st.info("ZIP dapat disiapkan setelah semua proses batch berhenti. Klik Segarkan histori untuk memperbarui.")
+        st.info(
+            "ZIP dapat disiapkan setelah semua proses batch berhenti. Klik Segarkan histori untuk memperbarui."
+        )
     elif completed != len(jobs):
-        st.warning("Sebagian dokumen belum selesai atau gagal. ZIP hanya berisi hasil yang tersedia; periksa status tiap dokumen.")
-    if st.button("Siapkan ZIP seluruh hasil", key=f"prepare_{batch['id']}", disabled=busy):
+        st.warning(
+            "Sebagian dokumen belum selesai atau gagal. ZIP hanya berisi hasil yang tersedia; periksa status tiap dokumen."
+        )
+    if st.button(
+        "Siapkan ZIP seluruh hasil", key=f"prepare_{batch['id']}", disabled=busy
+    ):
         with st.spinner("Mengemas hasil batch..."):
             data = build_batch_zip(batch, output_dir)
             directory = output_dir / "batches" / batch["id"]
@@ -311,27 +336,38 @@ def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
             temporary.replace(directory / "hasil.zip")
     zip_path = output_dir / "batches" / batch["id"] / "hasil.zip"
     if zip_path.exists() and not busy:
-        st.caption("ZIP adalah salinan saat terakhir disiapkan. Siapkan ulang setelah menjalankan ulang dokumen.")
+        st.caption(
+            "ZIP adalah salinan saat terakhir disiapkan. Siapkan ulang setelah menjalankan ulang dokumen."
+        )
         with zip_path.open("rb") as archive:
-            st.download_button("Unduh ZIP batch", archive, file_name=f"batch_{batch['id']}.zip",
-                               mime="application/zip", key=f"download_{batch['id']}")
+            st.download_button(
+                "Unduh ZIP batch",
+                archive,
+                file_name=f"batch_{batch['id']}.zip",
+                mime="application/zip",
+                key=f"download_{batch['id']}",
+            )
 
 
 def table_csv_bytes(conn: sqlite3.Connection, table: str) -> bytes:
     quoted = '"' + table.replace('"', '""') + '"'
-    return pd.read_sql_query(f"SELECT * FROM {quoted}", conn).to_csv(index=False).encode("utf-8-sig")
+    return (
+        pd.read_sql_query(f"SELECT * FROM {quoted}", conn)
+        .to_csv(index=False)
+        .encode("utf-8-sig")
+    )
 
 
 def build_sqlite_download(db_file: Path) -> bytes:
     """Snapshot konsisten, termasuk transaksi yang telah commit di WAL."""
-    source = sqlite3.connect(db_file.resolve().as_uri() + '?mode=ro', uri=True)
+    source = sqlite3.connect(db_file.resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        with TemporaryDirectory(prefix='sqlite_download_') as directory:
-            path = Path(directory) / 'snapshot.sqlite'
+        with TemporaryDirectory(prefix="sqlite_download_") as directory:
+            path = Path(directory) / "snapshot.sqlite"
             snapshot = sqlite3.connect(path)
             try:
                 source.backup(snapshot)
-                snapshot.execute('PRAGMA journal_mode=DELETE')
+                snapshot.execute("PRAGMA journal_mode=DELETE")
             finally:
                 snapshot.close()
             return path.read_bytes()
@@ -344,11 +380,11 @@ def build_all_tables_csv_zip(conn: sqlite3.Connection, tables: list[str]) -> byt
     used: set[str] = set()
     with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
         for table in tables:
-            safe_name = re.sub(r'[^\w .-]', '_', table).strip('. ') or 'table'
-            name = safe_name + '.csv'
+            safe_name = re.sub(r"[^\w .-]", "_", table).strip(". ") or "table"
+            name = safe_name + ".csv"
             index = 2
             while name in used:
-                name = f'{safe_name}_{index}.csv'
+                name = f"{safe_name}_{index}.csv"
                 index += 1
             used.add(name)
             archive.writestr(name, table_csv_bytes(conn, table))
@@ -427,7 +463,27 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
             if st.button("Buka", key=f"batch_open_{stem}", disabled=job is None):
                 st.session_state["selected_stem"] = stem
                 st.rerun()
-    st.caption("Setiap file memiliki hasil Markdown sendiri. Pilih Buka untuk melihat hasil atau progresnya.")
+    st.caption(
+        "Setiap file memiliki hasil Markdown sendiri. Pilih Buka untuk melihat hasil atau progresnya."
+    )
+
+
+@st.fragment(run_every=2)
+def render_active_ingest_status(output_path: Path) -> None:
+    """Tampilkan status ringkas jumlah ingest di pojok kanan atas."""
+    active_counts = JobManager.get_instance().get_active_job_counts(output_path)
+    if active_counts["active"]:
+        status_text = (
+            f"🔄 {active_counts['active']} ingest aktif · "
+            f"{active_counts['running']} berjalan · {active_counts['queued']} antrean"
+        )
+    else:
+        status_text = "✅ Tidak ada ingest aktif"
+    st.markdown(
+        f'<div style="text-align:right;color:#64748b;font-size:0.85rem;">'
+        f"{status_text}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 @st.fragment(run_every=2)
@@ -471,8 +527,42 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
     )
 
     # Kotak informasi background safety & path file log fisik
-    log_file_str = str(job.latest_log_path.resolve()) if job.latest_log_path else "output/logs/..."
-    st.info(f"📌 Aktivitas terakhir: {job.last_message or 'Sedang menyiapkan proses...'}")
+    log_file_str = (
+        str(job.latest_log_path.resolve()) if job.latest_log_path else "output/logs/..."
+    )
+    st.info(
+        f"📌 Aktivitas terakhir: {job.last_message or 'Sedang menyiapkan proses...'}"
+    )
+
+    completed_pages = read_completed_markdown_pages(job.out_file)
+    if completed_pages:
+        st.markdown("#### 👀 Preview halaman yang sudah selesai")
+        st.caption(
+            "Preview ini diperbarui otomatis. Isi akhir dapat berubah setelah pemeriksaan "
+            "dan penyatuan seluruh dokumen selesai."
+        )
+        available_pages = sorted(completed_pages)
+        selected_page = st.selectbox(
+            "Pilih halaman / slide yang sudah selesai",
+            available_pages,
+            index=len(available_pages) - 1,
+            format_func=lambda page_number: f"Halaman / Slide {page_number}",
+            key=f"live_preview_page_{stem}",
+        )
+        images = get_document_images(stem, output_path)
+        preview_text = completed_pages[selected_page]
+        if 0 < selected_page <= len(images):
+            image_col, text_col = st.columns([1.1, 1], gap="medium")
+            with image_col:
+                st.image(
+                    str(images[selected_page - 1]),
+                    caption=f"Dokumen asli · halaman / slide {selected_page}",
+                    use_container_width=True,
+                )
+            with text_col:
+                st.markdown(preview_text)
+        else:
+            st.markdown(preview_text)
 
     completed_pages = read_completed_markdown_pages(job.out_file)
     if completed_pages:
@@ -516,14 +606,11 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
         if st.button("🔄 Segarkan Tampilan Sekarang", use_container_width=True):
             st.rerun()
     with col_a2:
-        if (
-            st.button(
-                "🛑 Batalkan Ekstraksi",
-                type="secondary",
-                use_container_width=True,
-            )
-            and job_manager.cancel_job(stem)
-        ):
+        if st.button(
+            "🛑 Batalkan Ekstraksi",
+            type="secondary",
+            use_container_width=True,
+        ) and job_manager.cancel_job(stem):
             st.warning("Proses ekstraksi telah dibatalkan.")
             st.rerun()
 
@@ -551,9 +638,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     with col_top1:
         st.subheader(f"📄 Hasil dokumen: `{stem}`")
         badge_pages = f"{len(images)} halaman/slide" if images else "Hasil teks"
-        st.caption(
-            f"Selesai diproses · {badge_pages} · File hasil: `{md_file.name}`"
-        )
+        st.caption(f"Selesai diproses · {badge_pages} · File hasil: `{md_file.name}`")
     with col_top2:
         zip_data = build_document_zip(stem, output_path)
         st.download_button(
@@ -568,13 +653,15 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
             st.rerun()
 
     # Label utama memakai bahasa berbasis tujuan pengguna; istilah teknis ada di detail.
-    tab_inspector, tab_guardrail, tab_md, tab_sql, tab_log = st.tabs([
-        "🔍 Cocokkan dengan dokumen asli",
-        "✅ Periksa kelengkapan data",
-        "📝 Baca dan unduh teks",
-        "📊 Lihat tabel dan grafik",
-        "🔧 Detail proses",
-    ])
+    tab_inspector, tab_guardrail, tab_md, tab_sql, tab_log = st.tabs(
+        [
+            "🔍 Cocokkan dengan dokumen asli",
+            "✅ Periksa kelengkapan data",
+            "📝 Baca dan unduh teks",
+            "📊 Lihat tabel dan grafik",
+            "🔧 Detail proses",
+        ]
+    )
 
     # --------------------------------------------------------------------------
     # TAB 1: VISUAL PAGE INSPECTOR (SIDE-BY-SIDE)
@@ -638,29 +725,27 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                     f"##### ✍️ Teks hasil · {'halaman ' + str(selected_page_idx) if view_mode == 'Halaman ini' else 'seluruh dokumen'}"
                 )
                 text_to_show = (
-                    current_page_text
-                    if view_mode == "Halaman ini"
-                    else md_content
+                    current_page_text if view_mode == "Halaman ini" else md_content
                 )
 
                 # Deteksi jika halaman ini memiliki diagram Mermaid
                 page_mermaids = extract_mermaid_blocks(text_to_show)
                 if page_mermaids:
-                    st.info(
-                        f"Terdapat {len(page_mermaids)} diagram pada bagian ini."
-                    )
-                    with st.expander(
-                        "Lihat diagram", expanded=True
-                    ):
+                    st.info(f"Terdapat {len(page_mermaids)} diagram pada bagian ini.")
+                    with st.expander("Lihat diagram", expanded=True):
                         for m_code in page_mermaids:
                             render_mermaid_html(m_code, height=320)
 
                 st.markdown(text_to_show)
 
             from app.learning_ui import render_correction_form
+
             render_correction_form(
-                stem=stem, page=selected_page_idx, image_path=current_img_path,
-                original=pages_map.get(selected_page_idx, ""), images=images,
+                stem=stem,
+                page=selected_page_idx,
+                image_path=current_img_path,
+                original=pages_map.get(selected_page_idx, ""),
+                images=images,
                 source_path=job.input_path if job else None,
             )
         else:
@@ -698,7 +783,9 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
         if report.guardrail_status == "PASSED":
             st.success(f"✅ **Data terlihat konsisten** — {report.supervisor_notes}")
         elif report.guardrail_status == "WARNING":
-            st.warning(f"⚠️ **Ada bagian yang perlu diperiksa** — {report.supervisor_notes}")
+            st.warning(
+                f"⚠️ **Ada bagian yang perlu diperiksa** — {report.supervisor_notes}"
+            )
         else:
             st.error(f"❌ **Data belum konsisten** — {report.supervisor_notes}")
 
@@ -752,9 +839,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
             # Deteksi Diagram Mermaid di seluruh dokumen
             doc_mermaids = extract_mermaid_blocks(md_content)
             if doc_mermaids:
-                st.markdown(
-                    f"### 🎨 Diagram yang ditemukan ({len(doc_mermaids)})"
-                )
+                st.markdown(f"### 🎨 Diagram yang ditemukan ({len(doc_mermaids)})")
                 for idx, m_code in enumerate(doc_mermaids, 1):
                     with st.expander(
                         f"📊 Diagram {idx}",
@@ -807,20 +892,34 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                         key=f"all_csv_{stem}",
                     )
                     if "document_headers" in tables and "transaction_details" in tables:
-                        with st.expander("📑 Tampilan Relasional Header & Detail Transaksi", expanded=False):
-                            df_hdr = pd.read_sql_query("SELECT * FROM document_headers;", conn)
+                        with st.expander(
+                            "📑 Tampilan Relasional Header & Detail Transaksi",
+                            expanded=False,
+                        ):
+                            df_hdr = pd.read_sql_query(
+                                "SELECT * FROM document_headers;", conn
+                            )
                             st.markdown("**Daftar Header Dokumen Terdaftar:**")
                             st.dataframe(df_hdr, use_container_width=True)
                             if not df_hdr.empty and "header_id" in df_hdr.columns:
+
                                 def _fmt_hdr(hid: Any) -> str:
                                     matching = df_hdr.loc[df_hdr["header_id"] == hid]
                                     if matching.empty:
                                         return f"ID #{hid}"
                                     r_data = matching.iloc[0]
                                     t_val = r_data.get("doc_title")
-                                    t_str = str(t_val).strip() if pd.notna(t_val) and str(t_val).strip() else "Dokumen"
+                                    t_str = (
+                                        str(t_val).strip()
+                                        if pd.notna(t_val) and str(t_val).strip()
+                                        else "Dokumen"
+                                    )
                                     n_val = r_data.get("doc_number")
-                                    n_str = str(n_val).strip() if pd.notna(n_val) and str(n_val).strip() else "-"
+                                    n_str = (
+                                        str(n_val).strip()
+                                        if pd.notna(n_val) and str(n_val).strip()
+                                        else "-"
+                                    )
                                     return f"ID #{hid} | {t_str} ({n_str})"
 
                                 selected_hdr = st.selectbox(
@@ -831,14 +930,15 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                                 )
                                 if selected_hdr is not None:
                                     df_rel_dtl = pd.read_sql_query(
-                                        f"SELECT * FROM transaction_details WHERE header_id = {int(selected_hdr)};", conn
+                                        f"SELECT * FROM transaction_details WHERE header_id = {int(selected_hdr)};",
+                                        conn,
                                     )
-                                    st.caption(f"Menampilkan {len(df_rel_dtl)} item transaksi untuk Header ID #{selected_hdr}:")
+                                    st.caption(
+                                        f"Menampilkan {len(df_rel_dtl)} item transaksi untuk Header ID #{selected_hdr}:"
+                                    )
                                     st.dataframe(df_rel_dtl, use_container_width=True)
 
-                    selected_tbl = st.selectbox(
-                        "Pilih Tabel untuk Dilihat:", tables
-                    )
+                    selected_tbl = st.selectbox("Pilih Tabel untuk Dilihat:", tables)
                     df_preview = pd.read_sql_query(
                         f"SELECT * FROM '{selected_tbl}' LIMIT 100;", conn
                     )
@@ -861,9 +961,15 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 
                     # Fitur Deduplikasi & Pembersihan Data
                     with st.expander("🧹 Bersihkan data ganda"):
-                        st.caption("Cari baris yang sama atau mirip, lalu gabungkan data yang saling melengkapi.")
-                        if st.button(f"Bersihkan data ganda pada '{selected_tbl}'", key=f"btn_dedup_{selected_tbl}"):
+                        st.caption(
+                            "Cari baris yang sama atau mirip, lalu gabungkan data yang saling melengkapi."
+                        )
+                        if st.button(
+                            f"Bersihkan data ganda pada '{selected_tbl}'",
+                            key=f"btn_dedup_{selected_tbl}",
+                        ):
                             from app.tabular_db import merge_and_deduplicate_tables
+
                             report = merge_and_deduplicate_tables(db_file, selected_tbl)
                             st.success(f"{report.details}")
                             st.rerun()
@@ -910,7 +1016,9 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 
                     # Konsol SQL Query
                     with st.expander("🔧 Pencarian lanjutan dengan SQL"):
-                        st.caption("Fitur ini ditujukan untuk pengguna yang memahami query SQL.")
+                        st.caption(
+                            "Fitur ini ditujukan untuk pengguna yang memahami query SQL."
+                        )
                         default_query = f"SELECT * FROM '{selected_tbl}' LIMIT 10;"
                         user_query = st.text_area(
                             "Tulis query SELECT:", value=default_query, height=75
@@ -918,35 +1026,25 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                         run_query = st.button("Jalankan query", type="primary")
                     if run_query:
                         try:
-                            if not user_query.strip().upper().startswith(
-                                "SELECT"
-                            ):
+                            if not user_query.strip().upper().startswith("SELECT"):
                                 st.error(
                                     "Demi keamanan sistem, hanya query SELECT yang diizinkan."
                                 )
                             else:
-                                df_query_res = pd.read_sql_query(
-                                    user_query, conn
-                                )
+                                df_query_res = pd.read_sql_query(user_query, conn)
                                 st.success(
                                     f"Query sukses — Ditemukan {len(df_query_res)} baris:"
                                 )
-                                st.dataframe(
-                                    df_query_res, use_container_width=True
-                                )
+                                st.dataframe(df_query_res, use_container_width=True)
                         except Exception as q_err:  # noqa: BLE001
                             st.error(f"Error query SQL: {q_err}")
                 else:
-                    st.info(
-                        "Database SQLite ada namun belum berisi tabel data."
-                    )
+                    st.info("Database SQLite ada namun belum berisi tabel data.")
                 conn.close()
             except Exception as e:  # noqa: BLE001
                 st.warning(f"Gagal membaca database SQLite: {e}")
         else:
-            st.info(
-                "Belum ada file database SQLite yang terbentuk untuk dokumen ini."
-            )
+            st.info("Belum ada file database SQLite yang terbentuk untuk dokumen ini.")
 
     # --------------------------------------------------------------------------
     # TAB 5: RUN LOG
@@ -999,35 +1097,70 @@ def main() -> None:
     # Sidebar: Konfigurasi Pipeline & Navigasi Dokumen
     with st.sidebar:
         st.title("📑 Pengolah Dokumen AI")
-        st.caption("Ubah PDF, presentasi, dan gambar menjadi teks serta tabel yang siap digunakan.")
+        st.caption(
+            "Ubah PDF, presentasi, dan gambar menjadi teks serta tabel yang siap digunakan."
+        )
 
         all_docs = job_manager.list_all_documents(output_dir=output_dir)
 
         batches = list_batches(output_dir)
-        st.markdown("### Histori batch")
-        batch_query = st.text_input("Cari batch atau nama file", key="batch_search").casefold()
-        for batch in batches:
-            if batch_query and batch_query not in (batch["name"] + " " + " ".join(
-                doc.get("source_name", doc["stem"]) for doc in batch["documents"]
-            )).casefold():
-                continue
-            with st.expander(f"{batch['name']} · {len(batch['documents'])} file · {batch['created_at'][:10]}"):
-                st.caption(batch["created_at"])
-                if st.button("Buka batch", key=f"history_batch_{batch['id']}"):
-                    st.session_state["selected_batch_id"] = batch["id"]
-                    st.session_state["selected_stem"] = batch["documents"][0]["stem"] if batch["documents"] else None
-                    st.rerun()
-        if not batches:
-            st.caption("Batch upload baru akan tercatat di sini, termasuk setelah restart.")
+        with st.expander("Histori batch", expanded=False):
+            batch_query = st.text_input(
+                "Cari batch atau nama file", key="batch_search"
+            ).casefold()
+            for batch in batches:
+                if (
+                    batch_query
+                    and batch_query
+                    not in (
+                        batch["name"]
+                        + " "
+                        + " ".join(
+                            doc.get("source_name", doc["stem"])
+                            for doc in batch["documents"]
+                        )
+                    ).casefold()
+                ):
+                    continue
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{batch['name']}** · {len(batch['documents'])} file · "
+                        f"{batch['created_at'][:10]}"
+                    )
+                    st.caption(batch["created_at"])
+                    if st.button("Buka batch", key=f"history_batch_{batch['id']}"):
+                        st.session_state["selected_batch_id"] = batch["id"]
+                        st.session_state["selected_stem"] = (
+                            batch["documents"][0]["stem"]
+                            if batch["documents"]
+                            else None
+                        )
+                        st.rerun()
+            if not batches:
+                st.caption(
+                    "Batch upload baru akan tercatat di sini, termasuk setelah restart."
+                )
 
         st.markdown("### Histori dokumen")
         query = st.text_input("Cari nama dokumen", key="document_search").casefold()
-        status_labels = {"queued": "Menunggu", "running": "Diproses", "completed": "Selesai",
-                         "failed": "Gagal", "canceled": "Dibatalkan"}
-        status_filter = st.selectbox("Filter status", ["all", *status_labels],
-                                     format_func=lambda value: status_labels.get(value, "Semua status"))
-        visible_docs = [doc for doc in all_docs if query in doc["stem"].casefold()
-                        and (status_filter == "all" or doc["status"] == status_filter)]
+        status_labels = {
+            "queued": "Menunggu",
+            "running": "Diproses",
+            "completed": "Selesai",
+            "failed": "Gagal",
+            "canceled": "Dibatalkan",
+        }
+        status_filter = st.selectbox(
+            "Filter status",
+            ["all", *status_labels],
+            format_func=lambda value: status_labels.get(value, "Semua status"),
+        )
+        visible_docs = [
+            doc
+            for doc in all_docs
+            if query in doc["stem"].casefold()
+            and (status_filter == "all" or doc["status"] == status_filter)
+        ]
         options = [None, *[doc["stem"] for doc in visible_docs]]
         current = st.session_state.get("selected_stem")
         if current and current not in options:
@@ -1040,9 +1173,15 @@ def main() -> None:
             doc = doc_by_stem.get(stem, {})
             return f"{status_labels.get(doc.get('status', ''), 'Tidak diketahui')} · {stem}"
 
-        chosen_stem = st.selectbox("Pilih dokumen", options, index=options.index(current),
-                                   format_func=document_label)
-        st.caption(f"{len(visible_docs)} dari {len(all_docs)} dokumen · antrean aktif di atas, lalu terbaru")
+        chosen_stem = st.selectbox(
+            "Pilih dokumen",
+            options,
+            index=options.index(current),
+            format_func=document_label,
+        )
+        st.caption(
+            f"{len(visible_docs)} dari {len(all_docs)} dokumen · antrean aktif di atas, lalu terbaru"
+        )
         if chosen_stem != current:
             st.session_state["selected_stem"] = chosen_stem
             st.session_state["selected_batch_id"] = None
@@ -1063,7 +1202,11 @@ def main() -> None:
 
         with st.expander("Pengaturan Lanjutan", expanded=False):
             dpi_val = st.slider(
-                "Ketajaman gambar (PDF/PPT):", 100, 300, 200, 25,
+                "Ketajaman gambar (PDF/PPT):",
+                100,
+                300,
+                200,
+                25,
                 help="Nilai lebih tinggi dapat membantu dokumen kecil atau buram, tetapi prosesnya lebih lama.",
             )
             force_all_tbl = st.checkbox(
@@ -1076,19 +1219,31 @@ def main() -> None:
         if st.button("🔄 Segarkan histori", use_container_width=True):
             st.rerun()
 
+    status_col = st.columns([8, 2])[1]
+    with status_col:
+        render_active_ingest_status(output_dir)
+
     active_stem = st.session_state.get("selected_stem")
-    selected_batch = next((batch for batch in batches
-                           if batch["id"] == st.session_state.get("selected_batch_id")), None)
+    selected_batch = next(
+        (
+            batch
+            for batch in batches
+            if batch["id"] == st.session_state.get("selected_batch_id")
+        ),
+        None,
+    )
     if selected_batch:
         render_batch_download(selected_batch, output_dir)
-        render_batch_monitor([doc["stem"] for doc in selected_batch["documents"]], output_dir)
+        render_batch_monitor(
+            [doc["stem"] for doc in selected_batch["documents"]], output_dir
+        )
 
     if active_stem is None:
         # MODE 1: UNGGAH DOKUMEN BARU
         st.subheader("📤 Unggah Dokumen Baru")
         st.caption(
             "1. Pilih file · 2. Sesuaikan pengaturan bila perlu · 3. Mulai ekstraksi. "
-            "Mendukung PDF, PPTX/PPT, PNG, JPG, dan WebP."
+            "Mendukung PDF, DOCX/DOC, Excel, PPTX/PPT, PNG, JPG, dan WebP."
         )
 
         uploaded_files = st.file_uploader(
@@ -1096,7 +1251,7 @@ def main() -> None:
             type=SUPPORTED_TYPES,
             accept_multiple_files=True,
             key="document_files_uploader",
-            help="Pilih beberapa PDF, PPT/PPTX, PNG, JPG, atau WebP sekaligus.",
+            help="Pilih beberapa PDF, DOCX/DOC, Excel, PPT/PPTX, PNG, JPG, atau WebP sekaligus.",
         )
         uploaded_directory = st.file_uploader(
             "Atau pilih satu folder:",
@@ -1177,15 +1332,15 @@ def main() -> None:
 
         elif job is not None and job.status in ("failed", "canceled"):
             if job.status == "canceled":
-                st.warning(
-                    "⚠️ **Proses ekstraksi telah dibatalkan oleh pengguna.**"
-                )
+                st.warning("⚠️ **Proses ekstraksi telah dibatalkan oleh pengguna.**")
             else:
                 st.error("❌ **Terjadi Kesalahan saat Ekstraksi Dokumen**")
                 if job.error_message:
                     st.error(f"Detail Kesalahan: {job.error_message}")
                 if job.latest_log_path:
-                    st.info(f"📂 **Lokasi Log Lengkap:** `{job.latest_log_path.resolve()}`")
+                    st.info(
+                        f"📂 **Lokasi Log Lengkap:** `{job.latest_log_path.resolve()}`"
+                    )
 
             st.markdown("##### 📜 Log Terakhir Sebelum Berhenti:")
             st.code(
@@ -1195,18 +1350,20 @@ def main() -> None:
 
             col_f1, col_f2 = st.columns([1, 1])
             with col_f1:
-                if st.button("🔄 Coba Ekstrak Ulang", type="primary", use_container_width=True):
+                if st.button(
+                    "🔄 Coba Ekstrak Ulang", type="primary", use_container_width=True
+                ):
                     job_manager.restart_job(active_stem, output_dir=output_dir)
                     st.rerun()
             with col_f2:
-                if st.button("➕ Beralih ke Unggah Dokumen Lain", use_container_width=True):
+                if st.button(
+                    "➕ Beralih ke Unggah Dokumen Lain", use_container_width=True
+                ):
                     st.session_state["selected_stem"] = None
                     st.rerun()
 
         else:
-            candidate_uploads = list(
-                (output_dir / "uploads").glob(f"{active_stem}.*")
-            )
+            candidate_uploads = list((output_dir / "uploads").glob(f"{active_stem}.*"))
             if candidate_uploads:
                 input_file = candidate_uploads[0]
                 st.info(f"📄 File siap diekstrak: **{input_file.name}**")
@@ -1220,9 +1377,7 @@ def main() -> None:
                     )
                     st.rerun()
             else:
-                st.warning(
-                    f"Dokumen `{active_stem}` tidak ditemukan dalam sistem."
-                )
+                st.warning(f"Dokumen `{active_stem}` tidak ditemukan dalam sistem.")
                 if st.button("⬅️ Kembali ke Unggah Dokumen"):
                     st.session_state["selected_stem"] = None
                     st.rerun()

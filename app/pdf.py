@@ -186,10 +186,12 @@ def extract_pdf_markdown_mupdf(
         target_indices = pages if pages is not None else list(range(len(doc)))
         for pno in target_indices:
             if pno < len(doc):
-                chunks.append({
-                    "text": doc[pno].get_text("text"),
-                    "metadata": {"page": pno + 1},
-                })
+                chunks.append(
+                    {
+                        "text": doc[pno].get_text("text"),
+                        "metadata": {"page": pno + 1},
+                    }
+                )
         doc.close()
         md_text = chunks
 
@@ -207,13 +209,15 @@ def extract_pdf_markdown_mupdf(
         for idx, item in enumerate(md_text, start=1):
             meta = item.get("metadata", {})
             page_num = meta.get("page", idx)
-            formatted_pages.append({
-                "page": page_num,
-                "text": item.get("text", ""),
-                "metadata": meta,
-                "tables": item.get("tables", []),
-                "images": item.get("images", []),
-            })
+            formatted_pages.append(
+                {
+                    "page": page_num,
+                    "text": item.get("text", ""),
+                    "metadata": meta,
+                    "tables": item.get("tables", []),
+                    "images": item.get("images", []),
+                }
+            )
         return formatted_pages
 
     return result
@@ -235,6 +239,7 @@ def process_multipage_pdf(
     auto_tabular_db: bool = True,
     force_all_tables: bool = False,
     output_markdown_path: str | Path | None = None,
+    source_file_for_records: str | Path | None = None,
 ) -> ExtractedDocument:
     """
     Proses seluruh halaman PDF dan gabungkan hasil ekstraksi menjadi teks Markdown utuh siap chunking.
@@ -242,6 +247,17 @@ def process_multipage_pdf(
     serta melakukan audit Guardrail jalur ganda di tahap akhir.
     """
     pdf_path = Path(pdf_path)
+    record_source = (
+        str(Path(source_file_for_records).resolve())
+        if source_file_for_records
+        else str(pdf_path)
+    )
+    record_stem = (
+        Path(source_file_for_records).stem if source_file_for_records else pdf_path.stem
+    )
+    display_name = (
+        Path(source_file_for_records).name if source_file_for_records else pdf_path.name
+    )
     total_pages = pdf_page_count(pdf_path)
 
     if pipeline is None:
@@ -269,7 +285,9 @@ def process_multipage_pdf(
         resolved_db_path: Path | None = Path(db_path).resolve()
     elif output_markdown_path:
         resolved_db_path = (
-            Path(output_markdown_path).resolve().parent / "databases" / f"{pdf_path.stem}.sqlite"
+            Path(output_markdown_path).resolve().parent
+            / "databases"
+            / f"{pdf_path.stem}.sqlite"
         )
     elif output_dir:
         resolved_db_path = (
@@ -313,7 +331,7 @@ def process_multipage_pdf(
                 "Memproses Halaman %d / %d dari '%s'...",
                 idx,
                 total_pages,
-                pdf_path.name,
+                display_name,
             )
 
             # Jalur 1: Ekstraksi Teks Markdown VLM dengan konteks halaman sebelumnya
@@ -331,12 +349,15 @@ def process_multipage_pdf(
 
             # Mekanisme Judul Dokumen (diekstraksi sekali, utamanya pada halaman 1)
             if idx == 1:
-                detected_title = getattr(res, "document_title", None) or extract_document_title(
-                    page_md, fallback_title=pdf_path.stem
-                )
+                detected_title = getattr(
+                    res, "document_title", None
+                ) or extract_document_title(page_md, fallback_title=pdf_path.stem)
                 if detected_title:
                     document_title = detected_title
-                    logger.info("[PDF] Judul dokumen utama teridentifikasi: '%s'", document_title)
+                    logger.info(
+                        "[PDF] Judul dokumen utama teridentifikasi: '%s'",
+                        document_title,
+                    )
 
             detected_specs: list[str] = res.get("specs") or ["plain"]
             total_visuals += int(res.get("visual_count", 0))
@@ -344,8 +365,10 @@ def process_multipage_pdf(
             if res.get("visual_count", 0) or res.get("table_count", 0):
                 logger.info(
                     "[PDF] Halaman %d/%d metadata: %d visual/diagram, %d tabel",
-                    idx, total_pages,
-                    res.get("visual_count", 0), res.get("table_count", 0),
+                    idx,
+                    total_pages,
+                    res.get("visual_count", 0),
+                    res.get("table_count", 0),
                 )
 
             pages_md.append(page_md)
@@ -374,9 +397,9 @@ def process_multipage_pdf(
                 tab_event, _ = process_page_tabular_agent(
                     page_markdown=page_md,
                     page_number=idx,
-                    source_file=str(pdf_path),
+                    source_file=record_source,
                     db_path=resolved_db_path,
-                    table_name_prefix=pdf_path.stem,
+                    table_name_prefix=record_stem,
                     append_if_matching=True,
                     force_all_tables=force_all_tables,
                     llm=llm or getattr(pipeline, "vlm", None),
@@ -403,11 +426,11 @@ def process_multipage_pdf(
     # Jalur 3: Supervisor Guardrail Cross-Verification (Audit Markdown vs SQLite)
     guardrail_report = None
     if auto_tabular_db and resolved_db_path and resolved_db_path.exists():
-        prune_document_pages(resolved_db_path, str(pdf_path), total_pages)
+        prune_document_pages(resolved_db_path, record_source, total_pages)
         guardrail_report = cross_verify_dual_track(
             stitched_markdown=full_md,
             db_path=resolved_db_path,
-            source_file=str(pdf_path),
+            source_file=record_source,
             total_pages=total_pages,
         )
         try:
@@ -423,19 +446,19 @@ def process_multipage_pdf(
             logger.warning("[PDF] Gagal mengekspor tabel SQLite ke CSV: %s", e_csv)
 
     # Hitung konsensus spesifikasi layout utama dokumen
-    flat_specs = [
-        s for page_spec in all_page_specs for s in page_spec if s != "plain"
-    ]
+    flat_specs = [s for page_spec in all_page_specs for s in page_spec if s != "plain"]
     dominant_specs = normalize_specs(flat_specs) if flat_specs else ["plain"]
     primary_doc_type = dominant_specs[0] if dominant_specs else "plain"
 
     logger.info(
         "[PDF] Selesai: %d halaman | %d elemen visual/diagram | %d tabel terdeteksi",
-        total_pages, total_visuals, total_tables,
+        total_pages,
+        total_visuals,
+        total_tables,
     )
 
     return ExtractedDocument(
-        source_file=str(pdf_path),
+        source_file=record_source,
         title=document_title,
         doc_type=primary_doc_type,
         pages=pages,

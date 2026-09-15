@@ -1,6 +1,6 @@
 # jds-magang-document-extractor — Vision VLM Document Extractor (Structured Markdown, Tabular SQLite Database, & Mermaid Diagrams)
 
-Sistem ekstraksi **dokumen internal perusahaan** (PDF, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**, **Engine Data Tabular Transaksional ke SQLite** untuk data log mutasi/rekening koran/faktur yang memerlukan kalkulasi agregat berpresisi 100% (SUM, AVG, COUNT, filter tanggal), serta **Sub-Agent Spesialis Diagram** untuk mengevaluasi secara selektif dan mengekstrak diagram visual/topologi menjadi kode **Mermaid.js** yang valid.
+Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**, **Engine Data Tabular Transaksional ke SQLite** untuk data log mutasi/rekening koran/faktur yang memerlukan kalkulasi agregat berpresisi 100% (SUM, AVG, COUNT, filter tanggal), serta **Sub-Agent Spesialis Diagram** untuk mengevaluasi secara selektif dan mengekstrak diagram visual/topologi menjadi kode **Mermaid.js** yang valid.
 
 > ℹ️ **Catatan Branch:** 
 > Fitur pipeline ekstraksi difokuskan pada format Markdown terstruktur, Tabular SQLite Database, dan Diagram Mermaid berbasis Vision Language Model murni (VLM). Modul rancang bangun RAG (staging blueprint: chunking, embedding, vector store interface) disimpan rapi pada modul terpisah `app/rag_staging.py` untuk fase pengembangan berikutnya.
@@ -207,7 +207,7 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
 ### Daftar MCP Tools:
 1. **`scan_document_folders`**: Pindai direktori (mis. `dataset`, `input`, `output`) dan seluruh subfolder untuk mendeteksi folder dokumen.
 2. **`process_document_batch`**: Ekstraksi dokumen massal dari folder terpilih.
-3. **`extract_document`**: Ekstraksi file dokumen tunggal (PDF, PPTX, gambar) ke Markdown siap chunking.
+3. **`extract_document`**: Ekstraksi file dokumen tunggal (PDF, DOCX, Excel, PPTX, gambar) ke Markdown siap chunking.
 4. **`classify_document_layout`**: Deteksi multi-trait spesifikasi tata letak dokumen.
 5. **`classify_diagram_convertibility`**: Evaluasi kelayakan visual diagram untuk konversi ke Mermaid.js.
 6. **`extract_diagram_to_mermaid`**: Ekstraksi diagram visual ke kode Mermaid.js yang valid secara sintaks.

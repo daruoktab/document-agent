@@ -31,6 +31,8 @@ from .diagram import (
 from .diagram import (
     extract_diagram_to_mermaid as run_extract_diagram,
 )
+from .docx import process_multipage_docx
+from .excel import process_multipage_excel
 from .extractor import VisionExtractor
 from .llm import build_vlm
 from .multi_page import preview_markdown_chunks
@@ -118,7 +120,9 @@ def build_deep_agent(
     ) -> str:
         """Ekstrak diagram visual pada dokumen menjadi kode Mermaid.js yang valid dan terstruktur, atau berikan deskripsi terstruktur jika diagram tidak cocok untuk Mermaid."""
         proc = preprocess_image(image_path)
-        res = run_extract_diagram(proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint)
+        res = run_extract_diagram(
+            proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint
+        )
         payload = res.model_dump()
         rendered_bytes = payload.pop("rendered_image_bytes", None)
         if rendered_bytes is not None:
@@ -144,6 +148,38 @@ def build_deep_agent(
         """Ekstrak dokumen PDF multi-halaman dengan heading continuity, ekstraksi tabel mandiri per-halaman ke SQLite, dan audit guardrail jalur ganda. Output streaming per-halaman ke file Markdown target."""
         res = process_multipage_pdf(
             pdf_path,
+            llm=vlm,
+            forced_specs=forced_specs,
+            auto_tabular_db=True,
+            db_path=default_db_path,
+            output_markdown_path=default_out_path,
+        )
+        return res.full_markdown
+
+    @tool
+    def extract_docx_document(
+        docx_path: str,
+        forced_specs: str | None = None,
+    ) -> str:
+        """Ekstrak dokumen DOCX/DOC dengan mengonversinya ke PDF, merender tiap halaman menjadi gambar, lalu menjalankan pipeline VLM dan SQLite yang sama seperti PDF."""
+        res = process_multipage_docx(
+            docx_path,
+            llm=vlm,
+            forced_specs=forced_specs,
+            auto_tabular_db=True,
+            db_path=default_db_path,
+            output_markdown_path=default_out_path,
+        )
+        return res.full_markdown
+
+    @tool
+    def extract_excel_document(
+        excel_path: str,
+        forced_specs: str | None = None,
+    ) -> str:
+        """Ekstrak workbook Excel/ODS dengan mengonversinya ke PDF, merender tiap halaman menjadi gambar, lalu menjalankan pipeline VLM dan SQLite yang sama seperti PDF."""
+        res = process_multipage_excel(
+            excel_path,
             llm=vlm,
             forced_specs=forced_specs,
             auto_tabular_db=True,
@@ -195,7 +231,9 @@ def build_deep_agent(
             force_all_tables=force_all,
             llm=vlm,
         )
-        return json.dumps([r.model_dump() for r in results], indent=2, ensure_ascii=False)
+        return json.dumps(
+            [r.model_dump() for r in results], indent=2, ensure_ascii=False
+        )
 
     @tool
     def inspect_sqlite_tables(db_path: str | None = None) -> str:
@@ -223,10 +261,14 @@ def build_deep_agent(
         return json.dumps(report.model_dump(), indent=2, ensure_ascii=False)
 
     @tool
-    def judge_and_refine_markdown(image_path: str, draft_markdown: str, specs: str = "plain") -> str:
+    def judge_and_refine_markdown(
+        image_path: str, draft_markdown: str, specs: str = "plain"
+    ) -> str:
         """Lakukan audit verifikasi & koreksi ulang (Judge & Self-Correction) dengan membandingkan draft gabungan Markdown terhadap citra asli dokumen."""
         proc = preprocess_image(image_path)
-        refined = extractor.judge_and_refine(proc.processed_path, draft_markdown, specs=specs.split(","))
+        refined = extractor.judge_and_refine(
+            proc.processed_path, draft_markdown, specs=specs.split(",")
+        )
         return refined
 
     tools = [
@@ -236,6 +278,8 @@ def build_deep_agent(
         extract_diagram_to_mermaid,
         extract_presentation_pptx,
         extract_pdf_document,
+        extract_docx_document,
+        extract_excel_document,
         classify_table_storage,
         ingest_tables_to_sqlite,
         inspect_sqlite_tables,
@@ -302,7 +346,26 @@ def build_deep_agent(
             ),
             tools=[extract_pdf_document],
         ),
-
+        SubAgent(
+            name="docx-orchestrator",
+            description="Sub-agent untuk orkestrasi pemrosesan DOCX/DOC multi-halaman melalui render visual per halaman.",
+            system_prompt=(
+                "Anda adalah Sub-Agent Spesialis Dokumen Word (.docx / .doc). "
+                "Tugas Anda: Konversi dokumen ke PDF sementara, proses halaman demi halaman sebagai gambar, "
+                "jaga kesinambungan heading antar-halaman, dan gabungkan hasilnya."
+            ),
+            tools=[extract_docx_document],
+        ),
+        SubAgent(
+            name="excel-orchestrator",
+            description="Sub-agent untuk orkestrasi pemrosesan Excel/ODS multi-halaman melalui render visual per halaman.",
+            system_prompt=(
+                "Anda adalah Sub-Agent Spesialis Workbook Excel/ODS. "
+                "Tugas Anda: Konversi workbook ke PDF sementara, proses halaman hasil cetak spreadsheet sebagai gambar, "
+                "jaga struktur sheet/tabel, dan gabungkan hasilnya."
+            ),
+            tools=[extract_excel_document],
+        ),
         SubAgent(
             name="tabular-db-specialist",
             description="Sub-agent untuk deteksi tabel transaksional, ingesti ke SQLite, double-verification, dan eksekusi query SQL.",
@@ -330,17 +393,19 @@ def build_deep_agent(
         "Karakteristik dokumen yang mungkin ditemui: surat/memo/pengumuman (plain), SOP/SK/kebijakan (markdown_hierarchy), "
         "artikel internal multi-kolom (bilingual_journal), slide presentasi (presentation_slides), "
         "screenshot chat (chat_transcript), form tanda tangan/paraf (signature_form).\n\n"
-        "Anda mengorkestrasi 6 Sub-Agent spesialis:\n"
+        "Anda mengorkestrasi 8 Sub-Agent spesialis:\n"
         "  - 'layout-classifier'         : Menentukan tipe dokumen & karakteristik komposit.\n"
         "  - 'markdown-extractor'        : Mengonversi halaman menjadi Markdown bersih.\n"
         "  - 'diagram-mermaid-specialist': Menangani diagram alur/relasi/topologi visual menjadi sintaks Mermaid.js.\n"
         "  - 'presentation-specialist'   : Menangani slide PPT/PPTX visual.\n"
         "  - 'pdf-orchestrator'          : Mengelola multi-halaman PDF dengan heading continuity.\n"
+        "  - 'docx-orchestrator'         : Mengelola multi-halaman DOCX/DOC lewat render visual per halaman.\n"
+        "  - 'excel-orchestrator'        : Mengelola workbook Excel/ODS lewat render visual per halaman.\n"
         "  - 'tabular-db-specialist'     : Memisahkan tabel transaksional ke SQLite dan melakukan double-verification.\n\n"
         "Instruksi Kerja:\n"
         f"{MARKDOWN_LINE_BREAK_RULES}\n\n"
         f"{MERMAID_EXTRACTION_RULES}\n\n"
-        "1. Identifikasi format dokumen masukan (PDF, PPTX, gambar tunggal).\n"
+        "1. Identifikasi format dokumen masukan (PDF, DOCX/DOC, Excel, PPTX, gambar tunggal).\n"
         "2. Delegasikan tugas ke sub-agent yang relevan. Contoh: 'diagram-mermaid-specialist' jika ada diagram/topologi, "
         "'tabular-db-specialist' jika ada tabel data transaksional.\n"
         "3. Gabungkan hasil ekstraksi teks dengan blok Mermaid dan tabel.\n"
@@ -349,7 +414,7 @@ def build_deep_agent(
         "5. Sajikan hasil ekstraksi akhir yang rapi, lengkap dengan laporan database SQLite dan blok kode Mermaid bila ada.\n\n"
         "CATATAN PENTING:\n"
         "- Output Markdown dan database SQLite sudah dikonfigurasi oleh sistem berdasarkan flag CLI. "
-        "Tool PPT/PDF dan tabular akan otomatis menulis ke path tersebut.\n"
+        "Tool DOCX/Excel/PPT/PDF dan tabular akan otomatis menulis ke path tersebut.\n"
         "- Jangan menambahkan reasoning, komentar proses, atau marker halaman/slide ke dalam output."
     )
 

@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS: set[str] = {
     ".pdf",
+    ".docx",
+    ".doc",
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".ods",
     ".pptx",
     ".ppt",
     ".png",
@@ -317,7 +323,7 @@ server = MCPServer(
 
 
 def _show_open_file_dialog_native(
-    title: str = "Pilih Dokumen (PDF, PPTX, Gambar)",
+    title: str = "Pilih Dokumen (PDF, DOCX, Excel, PPTX, Gambar)",
     multiple: bool = True,
     initial_dir: str = ".",
 ) -> list[str]:
@@ -430,7 +436,7 @@ def _scan_document_directories(root_dir: str | Path = ".") -> list[dict[str, Any
     ),
 )
 def open_file_dialog(
-    title: str = "Pilih Dokumen (PDF, PPTX, Gambar)",
+    title: str = "Pilih Dokumen (PDF, DOCX, Excel, PPTX, Gambar)",
     multiple: bool = True,
     initial_dir: str = ".",
 ) -> str:
@@ -525,7 +531,7 @@ def open_folder_dialog(
     name="scan_document_folders",
     description=(
         "Pindai direktori (misal 'dataset', 'output', 'input', atau path khusus) dan sub-subfoldernya "
-        "untuk mendeteksi keberadaan folder yang berisi file dokumen (PDF, PPTX, PPT, Gambar). "
+        "untuk mendeteksi keberadaan folder yang berisi file dokumen (PDF, DOCX, DOC, Excel, PPTX, PPT, Gambar). "
         "Mengembalikan daftar folder yang tersedia, jumlah file per ekstensi, dan contoh nama file."
     ),
 )

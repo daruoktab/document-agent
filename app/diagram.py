@@ -13,9 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import platform
 import re
-import shutil
 from pathlib import Path
 from typing import cast
 
@@ -76,13 +74,13 @@ def _sanitize_mermaid_line(line: str) -> str:
 
     # 3. Perbaiki penutup kurung ganda umum: `"]]` -> `"]`, `"]}}` -> `"]}`
     line = re.sub(r'(?<=\w)\["([^"\n]*)"\]\]', r'["\1"]', line)
-    line = re.sub(r'(?<=\w)\[([^\]\n]*)\]\](?!\s*\])', r'[\1]', line)
+    line = re.sub(r"(?<=\w)\[([^\]\n]*)\]\](?!\s*\])", r"[\1]", line)
     line = re.sub(r'(?<=\w)\{"([^"\n]*)"\}\}', r'{"\1"}', line)
 
     # Bersihkan pembungkus (' ... ') atau (" ... ") di dalam label simpul bertanda kutip
     line = re.sub(r'\["\(\'([^\'\n]+)\'\)"\]', r'["\1"]', line)
     line = re.sub(r'\["\(\"([^\"\n]+)\"\)"\]', r'["\1"]', line)
-    line = re.sub(r'\[\(\'([^\'\n]+)\'\)\]', r'["\1"]', line)
+    line = re.sub(r"\[\(\'([^\'\n]+)\'\)\]", r'["\1"]', line)
 
     def _quote_content(content: str) -> str:
         c = content.strip()
@@ -93,7 +91,9 @@ def _sanitize_mermaid_line(line: str) -> str:
         if c.endswith("]"):
             c = c[:-1].strip()
         # Bersihkan pembungkus (' ... ') atau (" ... ")
-        if (c.startswith("('") and c.endswith("')")) or (c.startswith('("') and c.endswith('")')):
+        if (c.startswith("('") and c.endswith("')")) or (
+            c.startswith('("') and c.endswith('")')
+        ):
             c = c[2:-2].strip()
         # Jika sudah dibungkus tanda kutip ganda atau tunggal
         if c.startswith('"') and c.endswith('"'):
@@ -108,31 +108,31 @@ def _sanitize_mermaid_line(line: str) -> str:
 
     # Ganti node bentuk circle (( ... ))
     line = re.sub(
-        r'(?<=\w)\(\((?!\")([^\)\n]+)\)\)',
+        r"(?<=\w)\(\((?!\")([^\)\n]+)\)\)",
         lambda m: f"(({_quote_content(m.group(1))}))",
         line,
     )
     # Ganti node bentuk stadium ([ ... ])
     line = re.sub(
-        r'(?<=\w)\(\[(?!\")([^\]\n]+)\]\)',
+        r"(?<=\w)\(\[(?!\")([^\]\n]+)\]\)",
         lambda m: f"([{_quote_content(m.group(1))}])",
         line,
     )
     # Ganti node bentuk cylinder [( ... )]
     line = re.sub(
-        r'(?<=\w)\[\((?!\")([^\)\n]+)\)\]',
+        r"(?<=\w)\[\((?!\")([^\)\n]+)\)\]",
         lambda m: f"[({_quote_content(m.group(1))})]",
         line,
     )
     # Ganti node bentuk square [ ... ]
     line = re.sub(
-        r'(?<=\w)\[(?!\")([^\]\n]+)\]',
+        r"(?<=\w)\[(?!\")([^\]\n]+)\]",
         lambda m: f"[{_quote_content(m.group(1))}]",
         line,
     )
     # Ganti node bentuk rhombus { ... }
     line = re.sub(
-        r'(?<=\w)\{(?!\")([^\}\n]+)\}',
+        r"(?<=\w)\{(?!\")([^\}\n]+)\}",
         lambda m: f"{{{_quote_content(m.group(1))}}}",
         line,
     )
@@ -161,7 +161,9 @@ def sanitize_mermaid_code(raw_text: str) -> str | None:
     cleaned = raw_text.strip()
 
     # Ekstrak dari blok markdown ```mermaid ... ```
-    mermaid_match = re.search(r"```(?:mermaid)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+    mermaid_match = re.search(
+        r"```(?:mermaid)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE
+    )
     if mermaid_match:
         cleaned = mermaid_match.group(1).strip()
 
@@ -171,13 +173,17 @@ def sanitize_mermaid_code(raw_text: str) -> str | None:
         return None
 
     first_line = lines[0].strip().lower().replace(" ", "").replace("-", "")
-    is_valid_header = any(first_line.startswith(kw.replace("-", "")) for kw in MERMAID_KEYWORDS)
+    is_valid_header = any(
+        first_line.startswith(kw.replace("-", "")) for kw in MERMAID_KEYWORDS
+    )
 
     if not is_valid_header:
         # Coba perbaiki jika ada preamble teks sebelum diagram
         for idx, line in enumerate(lines):
             line_clean = line.strip().lower().replace(" ", "").replace("-", "")
-            if any(line_clean.startswith(kw.replace("-", "")) for kw in MERMAID_KEYWORDS):
+            if any(
+                line_clean.startswith(kw.replace("-", "")) for kw in MERMAID_KEYWORDS
+            ):
                 cleaned = "\n".join(lines[idx:]).strip()
                 break
         else:
@@ -223,10 +229,14 @@ def sanitize_mermaid_code(raw_text: str) -> str | None:
         if subgraph_stack and arrow_regex.search(line):
             curr_sub = subgraph_stack[-1]
             esc_sub = re.escape(curr_sub)
-            pattern_src = r"\b" + esc_sub + r"\b(?=\s*(?:\[|\(|\{|\s*" + arrow_tokens + r"))"
+            pattern_src = (
+                r"\b" + esc_sub + r"\b(?=\s*(?:\[|\(|\{|\s*" + arrow_tokens + r"))"
+            )
             line = re.sub(pattern_src, f"{curr_sub}_node", line)
 
-            pattern_dst = r"(" + arrow_tokens + r"\s*(?:\|[^|\n]*\|\s*)?)\b" + esc_sub + r"\b"
+            pattern_dst = (
+                r"(" + arrow_tokens + r"\s*(?:\|[^|\n]*\|\s*)?)\b" + esc_sub + r"\b"
+            )
             line = re.sub(pattern_dst, r"\g<1>" + f"{curr_sub}_node", line)
 
         # B. Resolusi Konflik Deklarasi Node ID yang sama dengan label berbeda antar-subgraph
@@ -244,7 +254,13 @@ def sanitize_mermaid_code(raw_text: str) -> str | None:
                     declared_nodes[unique_nid] = nlabel
                 elif prev_label == nlabel and arrow_regex.search(line):
                     # C. Hapus deklarasi kurung label yang berulang pada relasi panah
-                    redecl_pattern = r"(" + arrow_tokens + r"\s*(?:\|[^|\n]*\|\s*)?)\b" + re.escape(nid) + r'\["[^"\n]+"\]'
+                    redecl_pattern = (
+                        r"("
+                        + arrow_tokens
+                        + r"\s*(?:\|[^|\n]*\|\s*)?)\b"
+                        + re.escape(nid)
+                        + r'\["[^"\n]+"\]'
+                    )
                     line = re.sub(redecl_pattern, r"\g<1>" + nid, line)
             else:
                 declared_nodes[nid] = nlabel
@@ -277,7 +293,10 @@ def validate_mermaid_syntax(mermaid_code: str) -> tuple[bool, str | None]:
     # Periksa header
     first_line = lines[0].lower().replace(" ", "").replace("-", "")
     if first_line.startswith("graph"):
-        return False, "Keyword 'graph' tidak dianjurkan; gunakan 'flowchart' (contoh: flowchart TD)."
+        return (
+            False,
+            "Keyword 'graph' tidak dianjurkan; gunakan 'flowchart' (contoh: flowchart TD).",
+        )
     if not any(first_line.startswith(kw.replace("-", "")) for kw in MERMAID_KEYWORDS):
         return False, f"Header Mermaid tidak dikenali: '{lines[0]}'"
 
@@ -285,21 +304,29 @@ def validate_mermaid_syntax(mermaid_code: str) -> tuple[bool, str | None]:
     code_without_strings = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', '""', mermaid_code)
 
     # Deteksi kurung siku ganda pada simpul tunggal (contoh: Node["Teks"]] )
-    if re.search(r'(?<=\w)\[[^\]\n]*\]\]', code_without_strings):
-        return False, "Terdapat penutup kurung siku ganda ']]' pada simpul berawalan tunggal '['."
+    if re.search(r"(?<=\w)\[[^\]\n]*\]\]", code_without_strings):
+        return (
+            False,
+            "Terdapat penutup kurung siku ganda ']]' pada simpul berawalan tunggal '['.",
+        )
 
     # Deteksi dangling <br/> di luar node pada baris relasi
-    if re.search(r'(?:\]|\)|\})\s*<br\s*/?>', code_without_strings, re.IGNORECASE):
-        return False, "Tag <br/> ditemukan di luar tanda kurung simpul. Semua pemisah baris harus berada di dalam label simpul bertanda kutip."
+    if re.search(r"(?:\]|\)|\})\s*<br\s*/?>", code_without_strings, re.IGNORECASE):
+        return (
+            False,
+            "Tag <br/> ditemukan di luar tanda kurung simpul. Semua pemisah baris harus berada di dalam label simpul bertanda kutip.",
+        )
 
     # Deteksi unquoted label yang mengandung tanda kurung di dalam simpul kotak (penyebab utama error 'got PS')
-    unquoted_paren_match = re.search(r'\b\w+\[[^"\]\n]*[\(\)][^"\]\n]*\]', code_without_strings)
+    unquoted_paren_match = re.search(
+        r'\b\w+\[[^"\]\n]*[\(\)][^"\]\n]*\]', code_without_strings
+    )
     if unquoted_paren_match:
         return (
             False,
             (
                 f"Label simpul mengandung tanda kurung tanpa tanda kutip dua: '{unquoted_paren_match.group(0)}'. "
-                "Gunakan tanda kutip dua, contoh: A[\"Teks (detail)\"]."
+                'Gunakan tanda kutip dua, contoh: A["Teks (detail)"].'
             ),
         )
 
@@ -354,11 +381,20 @@ def validate_mermaid_syntax(mermaid_code: str) -> tuple[bool, str | None]:
 
     # Toleransi kecil jika ada label khusus, namun beri warning jika selisih banyak
     if abs(open_brackets - close_brackets) > 1:
-        return False, f"Ketidakseimbangan tanda kurung siku: [{open_brackets} vs ]{close_brackets}"
+        return (
+            False,
+            f"Ketidakseimbangan tanda kurung siku: [{open_brackets} vs ]{close_brackets}",
+        )
     if abs(open_braces - close_braces) > 1:
-        return False, f"Ketidakseimbangan kurung kurawal: {{{open_braces}}} vs {{{close_braces}}}"
+        return (
+            False,
+            f"Ketidakseimbangan kurung kurawal: {{{open_braces}}} vs {{{close_braces}}}",
+        )
     if abs(open_parens - close_parens) > 1:
-        return False, f"Ketidakseimbangan tanda kurung biasa: ({open_parens} vs ){close_parens}"
+        return (
+            False,
+            f"Ketidakseimbangan tanda kurung biasa: ({open_parens} vs ){close_parens}",
+        )
 
     return True, None
 
@@ -381,37 +417,49 @@ def render_mermaid_to_png(
         return False, None, "Kode Mermaid kosong"
 
     try:
-        from mmdc import LocalMermaidConverter
+        import mmdc
     except ImportError:
-        logger.warning("[Diagram:Render] Modul 'mmdc' (pymmdc) tidak ditemukan. Render visual dilewati.")
+        logger.warning(
+            "[Diagram:Render] Modul 'mmdc' (pymmdc) tidak ditemukan. Render visual dilewati."
+        )
         return False, None, "Pustaka 'pymmdc' tidak terinstal"
 
-    is_windows = platform.system() == "Windows"
-    mmdc_cmd = "mmdc.cmd" if is_windows and shutil.which("mmdc.cmd") else "mmdc"
-
     try:
-        conv = LocalMermaidConverter(
-            mmdc_path=mmdc_cmd,
-            timeout=timeout,
-            validate_system=False,  # Hindari hardcoded check yang mencari executable mmdc tanpa ekstensi di Windows
-        )
-        conv.set_config(
-            width=width,
-            height=height,
-            backgroundColor=background_color,
+        _ = timeout
+        diagram = mmdc.render(
+            mermaid_code,
+            backend="js",
             theme=theme,
+            config={
+                "theme": theme,
+                "themeVariables": {
+                    "background": background_color,
+                },
+            },
+        )
+        render_background = (
+            None if background_color == "transparent" else background_color
         )
 
         if output_path:
             out_file = Path(output_path)
-            res = conv.convert_and_save(mermaid_code, str(out_file))
-            if res.status.value == "success" and out_file.exists():
+            diagram.save(
+                str(out_file),
+                width=float(width),
+                height=float(height),
+                background=render_background,
+                format="png",
+            )
+            if out_file.exists():
                 png_bytes = out_file.read_bytes()
                 return True, png_bytes, None
-            clean_err = res.error_message or "Konversi Mermaid ke PNG gagal"
-            return False, None, clean_err
+            return False, None, "Konversi Mermaid ke PNG gagal"
         else:
-            png_bytes = conv.convert_to_png(mermaid_code)
+            png_bytes = diagram.png(
+                width=float(width),
+                height=float(height),
+                background=render_background,
+            )
             if png_bytes:
                 return True, png_bytes, None
             return False, None, "Output PNG kosong dari compiler Mermaid"
@@ -422,23 +470,81 @@ def render_mermaid_to_png(
         return False, None, err_msg
 
 
-def get_diagram_recommendation(diagram_type: DiagramTypeLiteral | str) -> DiagramFormatRecommendation:
+def get_diagram_recommendation(
+    diagram_type: DiagramTypeLiteral | str,
+) -> DiagramFormatRecommendation:
     """Berikan rekomendasi format ekstraksi berdasarkan kategori diagram."""
     mermaid_compatible = {
-        "flowchart": ("flowchart TD", "mermaid_code", "Cocok untuk alur kerja terstruktur"),
-        "sequence_diagram": ("sequenceDiagram", "mermaid_code", "Cocok untuk urutan pesan/proses"),
-        "class_diagram": ("classDiagram", "mermaid_code", "Cocok untuk hierarki kelas OOP"),
-        "state_diagram": ("stateDiagram-v2", "mermaid_code", "Cocok untuk transisi state finite"),
-        "er_diagram": ("erDiagram", "mermaid_code", "Cocok untuk skema relasi entitas/database"),
-        "mindmap": ("mindmap", "mermaid_code", "Cocok untuk hierarki konsep & taksonomi"),
-        "gantt_chart": ("gantt", "mermaid_code", "Cocok untuk jadwal & lini masa proyek"),
-        "block_architecture": ("block-beta", "mermaid_code", "Cocok untuk diagram blok arsitektur"),
-        "pin_diagram": ("flowchart LR", "mermaid_code", "Diagram pinout/koneksi kaki IC"),
-        "memory_map": ("flowchart TD", "mermaid_code", "Peta alokasi memori atau register map"),
-        "circuit_diagram": ("flowchart LR", "mermaid_code", "Diagram sirkuit logika atau interkoneksi"),
-        "timing_diagram": ("sequenceDiagram", "mermaid_code", "Diagram waktu sinyal/timing diagram"),
-        "git_graph": ("gitGraph", "mermaid_code", "Cocok untuk visualisasi alur branching git"),
-        "generic_diagram": ("flowchart LR", "mermaid_code", "Diagram umum, gunakan representasi flowchart"),
+        "flowchart": (
+            "flowchart TD",
+            "mermaid_code",
+            "Cocok untuk alur kerja terstruktur",
+        ),
+        "sequence_diagram": (
+            "sequenceDiagram",
+            "mermaid_code",
+            "Cocok untuk urutan pesan/proses",
+        ),
+        "class_diagram": (
+            "classDiagram",
+            "mermaid_code",
+            "Cocok untuk hierarki kelas OOP",
+        ),
+        "state_diagram": (
+            "stateDiagram-v2",
+            "mermaid_code",
+            "Cocok untuk transisi state finite",
+        ),
+        "er_diagram": (
+            "erDiagram",
+            "mermaid_code",
+            "Cocok untuk skema relasi entitas/database",
+        ),
+        "mindmap": (
+            "mindmap",
+            "mermaid_code",
+            "Cocok untuk hierarki konsep & taksonomi",
+        ),
+        "gantt_chart": (
+            "gantt",
+            "mermaid_code",
+            "Cocok untuk jadwal & lini masa proyek",
+        ),
+        "block_architecture": (
+            "block-beta",
+            "mermaid_code",
+            "Cocok untuk diagram blok arsitektur",
+        ),
+        "pin_diagram": (
+            "flowchart LR",
+            "mermaid_code",
+            "Diagram pinout/koneksi kaki IC",
+        ),
+        "memory_map": (
+            "flowchart TD",
+            "mermaid_code",
+            "Peta alokasi memori atau register map",
+        ),
+        "circuit_diagram": (
+            "flowchart LR",
+            "mermaid_code",
+            "Diagram sirkuit logika atau interkoneksi",
+        ),
+        "timing_diagram": (
+            "sequenceDiagram",
+            "mermaid_code",
+            "Diagram waktu sinyal/timing diagram",
+        ),
+        "git_graph": (
+            "gitGraph",
+            "mermaid_code",
+            "Cocok untuk visualisasi alur branching git",
+        ),
+        "generic_diagram": (
+            "flowchart LR",
+            "mermaid_code",
+            "Diagram umum, gunakan representasi flowchart",
+        ),
     }
 
     if diagram_type in mermaid_compatible:
@@ -647,9 +753,7 @@ def extract_diagram_to_mermaid(
                             {"type": "text", "text": desc_prompt},
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": image_uri
-                                },
+                                "image_url": {"url": image_uri},
                             },
                         ],
                     }
@@ -679,11 +783,11 @@ def extract_diagram_to_mermaid(
         f"{syntax_hint}\n\n"
         "PANDUAN KETAT SINTAKS MERMAID (WAJIB DIIKUTI AGAR TIDAK PARSE ERROR):\n"
         "1. Baris pertama WAJIB deklarasi tipe diagram (gunakan 'flowchart TD' atau 'flowchart LR'; DILARANG menggunakan keyword 'graph').\n"
-        "2. SEMUA LABEL SIMPUL WAJIB DIAPIT TANDA KUTIP DUA (\") DI DALAM BENTUK SIMPUL:\n"
-        "   - CONTOH BENAR: A[\"<b>Hidup Saleh</b><br/>(Tit 1:8)\"] atau B((\"Lingkaran\")) atau Center{\"4 Syarat\"}\n"
+        '2. SEMUA LABEL SIMPUL WAJIB DIAPIT TANDA KUTIP DUA (") DI DALAM BENTUK SIMPUL:\n'
+        '   - CONTOH BENAR: A["<b>Hidup Saleh</b><br/>(Tit 1:8)"] atau B(("Lingkaran")) atau Center{"4 Syarat"}\n'
         "   - CONTOH SALAH: A[<b>Hidup Saleh</b><br>(Tit 1:8)]  <-- FATAL ERROR! Karakter '(' tanpa tanda kutip memicu crash 'got PS'!\n"
         "3. DILARANG menggunakan tanda kurung siku ganda ']]' jika pembukanya hanya '[' (CONTOH SALAH: Node[\"Teks\"]] ).\n"
-        "4. DILARANG meletakkan tag <br/> atau teks di luar tanda kurung simpul pada baris relasi (CONTOH SALAH: Node[\"A\"]<br/>(2) --> B).\n"
+        '4. DILARANG meletakkan tag <br/> atau teks di luar tanda kurung simpul pada baris relasi (CONTOH SALAH: Node["A"]<br/>(2) --> B).\n'
         "5. ID Simpul harus sederhana dan alfanumerik pendek (misal: A, B, node1, Step1).\n"
         "6. Untuk baris baru (line break) di dalam label teks, gunakan tag <br/> di dalam tanda kutip dua.\n"
         "7. PADA 'classDef', HANYA GUNAKAN PROPERTI CSS STANDAR:\n"
@@ -697,9 +801,9 @@ def extract_diagram_to_mermaid(
         "10. ID SIMPUL BERSIFAT GLOBAL (DILARANG MENGGUNAKAN ID YANG SAMA UNTUK DUA LABEL BERBEDA):\n"
         "    - Jika ada dua kotak dengan teks berbeda di subgraph berbeda, WAJIB beri ID unik (contoh: B0_Block_Low dan B1_Block_Low, JANGAN keduanya dinamai Block_Low).\n"
         "11. JANGAN MENGULANG DEFINISI KURUNG LABEL PADA RELASI BERIKUTNYA:\n"
-        "    - Jika Row8_Reg[\"EEDATA\"] sudah didefinisikan sebelumnya, relasi panah berikutnya cukup tulis: note1 -.-> Row8_Reg.\n"
+        '    - Jika Row8_Reg["EEDATA"] sudah didefinisikan sebelumnya, relasi panah berikutnya cukup tulis: note1 -.-> Row8_Reg.\n'
         "12. DILARANG MEMBUNGKUS TEKS LABEL DENGAN KURUNG-KUTIP GANDA SEPERTI [\"('...')\"]:\n"
-        "    - Gunakan format bersih: Node[\"Teks\"] (bukan Node[\"('Teks')\"]).\n"
+        '    - Gunakan format bersih: Node["Teks"] (bukan Node["(\'Teks\')"]).\n'
         "13. Berikan output di dalam blok markdown ```mermaid\\n...\\n```.\n"
         "14. Tambahkan ringkasan 1-2 kalimat di bawah blok kode yang menjelaskan arti diagram tersebut."
     )
@@ -778,7 +882,7 @@ def extract_diagram_to_mermaid(
                         f"Kode yang bermasalah:\n```mermaid\n{mermaid_block}\n```\n\n"
                         "PERBAIKI KODE DI ATAS DENGAN ATURAN KETAT BERIKUT:\n"
                         "1. Gunakan 'flowchart TD' atau 'flowchart LR' (DILARANG menggunakan 'graph').\n"
-                        "2. Selalu gunakan tanda kutip ganda pada label simpul: Node[\"Teks Label\"].\n"
+                        '2. Selalu gunakan tanda kutip ganda pada label simpul: Node["Teks Label"].\n'
                         "3. DILARANG menggunakan penutup kurung ganda ']]' jika pembukanya hanya satu '['.\n"
                         "4. DILARANG meletakkan <br/> atau teks di luar tanda kurung simpul pada baris relasi.\n"
                         "5. DILARANG menggunakan ID subgraph sebagai simpul relasi panah di dalam subgraph itu sendiri.\n"
@@ -793,17 +897,29 @@ def extract_diagram_to_mermaid(
                                     "role": "user",
                                     "content": [
                                         {"type": "text", "text": fix_prompt},
-                                        {"type": "image_url", "image_url": {"url": image_uri}},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": image_uri},
+                                        },
                                     ],
                                 }
                             ]
                         )
                         fix_text = strip_thinking_process(str(fix_resp.content).strip())
-                        m_fix = re.search(r"```(?:mermaid)?\s*([\s\S]*?)\s*```", fix_text, re.IGNORECASE)
-                        mermaid_block = m_fix.group(1).strip() if m_fix else fix_text.strip()
+                        m_fix = re.search(
+                            r"```(?:mermaid)?\s*([\s\S]*?)\s*```",
+                            fix_text,
+                            re.IGNORECASE,
+                        )
+                        mermaid_block = (
+                            m_fix.group(1).strip() if m_fix else fix_text.strip()
+                        )
                         continue
                     except Exception as e_fix:  # noqa: BLE001
-                        logger.warning("[Diagram:Extract] Gagal melakukan retry self-correction Mermaid: %s", e_fix)
+                        logger.warning(
+                            "[Diagram:Extract] Gagal melakukan retry self-correction Mermaid: %s",
+                            e_fix,
+                        )
                         break
                 else:
                     mermaid_block = None
@@ -813,7 +929,12 @@ def extract_diagram_to_mermaid(
             render_ok, png_data, render_err = render_mermaid_to_png(mermaid_block)
             is_env_error = any(
                 marker in (render_err or "").lower()
-                for marker in ("tidak terinstal", "chrome-headless-shell", "could not find chrome", "mmdc executable not found")
+                for marker in (
+                    "tidak terinstal",
+                    "chrome-headless-shell",
+                    "could not find chrome",
+                    "mmdc executable not found",
+                )
             )
             if not render_ok and render_err and not is_env_error:
                 logger.warning(
@@ -838,17 +959,29 @@ def extract_diagram_to_mermaid(
                                     "role": "user",
                                     "content": [
                                         {"type": "text", "text": fix_cli_prompt},
-                                        {"type": "image_url", "image_url": {"url": image_uri}},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": image_uri},
+                                        },
                                     ],
                                 }
                             ]
                         )
                         fix_text = strip_thinking_process(str(fix_resp.content).strip())
-                        m_fix = re.search(r"```(?:mermaid)?\s*([\s\S]*?)\s*```", fix_text, re.IGNORECASE)
-                        mermaid_block = m_fix.group(1).strip() if m_fix else fix_text.strip()
+                        m_fix = re.search(
+                            r"```(?:mermaid)?\s*([\s\S]*?)\s*```",
+                            fix_text,
+                            re.IGNORECASE,
+                        )
+                        mermaid_block = (
+                            m_fix.group(1).strip() if m_fix else fix_text.strip()
+                        )
                         continue
                     except Exception as e_cli_fix:  # noqa: BLE001
-                        logger.warning("[Diagram:Extract] Gagal melakukan retry compiler CLI: %s", e_cli_fix)
+                        logger.warning(
+                            "[Diagram:Extract] Gagal melakukan retry compiler CLI: %s",
+                            e_cli_fix,
+                        )
                         break
                 else:
                     logger.error(
@@ -867,7 +1000,9 @@ def extract_diagram_to_mermaid(
             # 4. Rendering Berhasil! Jalankan Multimodal Visual Verification Loop
             if render_ok and png_data:
                 rendered_png_bytes = png_data
-                logger.info("[Diagram:Extract] Render Mermaid CLI sukses. Menjalankan verifikasi visual multimodal.")
+                logger.info(
+                    "[Diagram:Extract] Render Mermaid CLI sukses. Menjalankan verifikasi visual multimodal."
+                )
                 try:
                     rendered_b64 = base64.b64encode(png_data).decode("utf-8")
                     rendered_uri = f"data:image/png;base64,{rendered_b64}"
@@ -894,15 +1029,23 @@ def extract_diagram_to_mermaid(
                                 "role": "user",
                                 "content": [
                                     {"type": "text", "text": verify_prompt},
-                                    {"type": "image_url", "image_url": {"url": image_uri}},
-                                    {"type": "image_url", "image_url": {"url": rendered_uri}},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": image_uri},
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": rendered_uri},
+                                    },
                                 ],
                             }
                         ]
                     )
                     v_text = strip_thinking_process(str(verify_resp.content).strip())
                     if "[CONFIRMED]" not in v_text.upper():
-                        m_revised = re.search(r"```(?:mermaid)?\s*([\s\S]*?)\s*```", v_text, re.IGNORECASE)
+                        m_revised = re.search(
+                            r"```(?:mermaid)?\s*([\s\S]*?)\s*```", v_text, re.IGNORECASE
+                        )
                         if m_revised:
                             revised_code = sanitize_mermaid_code(m_revised.group(1))
                             if revised_code:
@@ -910,9 +1053,14 @@ def extract_diagram_to_mermaid(
                                 if rev_ok and rev_png:
                                     mermaid_block = revised_code
                                     rendered_png_bytes = rev_png
-                                    logger.info("[Diagram:Extract] Kode Mermaid berhasil diselaraskan berdasarkan evaluasi visual multimodal.")
+                                    logger.info(
+                                        "[Diagram:Extract] Kode Mermaid berhasil diselaraskan berdasarkan evaluasi visual multimodal."
+                                    )
                 except Exception as e_vis:  # noqa: BLE001
-                    logger.warning("[Diagram:Extract] Verifikasi visual dilewati karena kendala teknis: %s", e_vis)
+                    logger.warning(
+                        "[Diagram:Extract] Verifikasi visual dilewati karena kendala teknis: %s",
+                        e_vis,
+                    )
 
             # Selesai dengan sukses
             break
@@ -939,7 +1087,9 @@ def extract_diagram_to_mermaid(
         return DiagramExtractionResult(
             status="error",
             is_mermaid=False,
-            diagram_type=cast(DiagramTypeLiteral, forced_diagram_type or "generic_diagram"),
+            diagram_type=cast(
+                DiagramTypeLiteral, forced_diagram_type or "generic_diagram"
+            ),
             mermaid_code=None,
             text_summary="Gagal melakukan ekstraksi diagram visual.",
             reasoning="Terjadi error saat ekstraksi visual diagram.",

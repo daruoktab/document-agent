@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings, get_settings
+from .docx import process_multipage_docx
+from .excel import process_multipage_excel
 from .graph import DocumentExtractionPipeline
 from .multi_page import preview_markdown_chunks
 from .pdf import process_multipage_pdf
@@ -24,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS: set[str] = {
     ".pdf",
+    ".docx",
+    ".doc",
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".ods",
     ".pptx",
     ".ppt",
     ".png",
@@ -229,8 +237,30 @@ def batch_extract_documents(
         out_file = doc_dir / f"{rel_stem}.md"
 
         try:
-            # 1. PPTX
-            if ext in (".pptx", ".ppt"):
+            # 1. DOCX/DOC
+            if ext in (".docx", ".doc"):
+                extracted = process_multipage_docx(
+                    docx_path=doc_file,
+                    pipeline=pipeline,
+                    output_dir=doc_dir / "pages",
+                    dpi=dpi,
+                    forced_specs=active_specs,
+                    output_markdown_path=out_file,
+                )
+                md_content = extracted.markdown_content
+            # 2. Excel
+            elif ext in (".xlsx", ".xls", ".xlsm", ".ods"):
+                extracted = process_multipage_excel(
+                    excel_path=doc_file,
+                    pipeline=pipeline,
+                    output_dir=doc_dir / "pages",
+                    dpi=dpi,
+                    forced_specs=active_specs,
+                    output_markdown_path=out_file,
+                )
+                md_content = extracted.markdown_content
+            # 3. PPTX
+            elif ext in (".pptx", ".ppt"):
                 md_content = process_presentation_vision(
                     pptx_path=doc_file,
                     pipeline=pipeline,
@@ -239,7 +269,7 @@ def batch_extract_documents(
                     forced_specs=active_specs,
                     output_markdown_path=out_file,
                 )
-            # 2. PDF
+            # 4. PDF
             elif ext == ".pdf":
                 extracted = process_multipage_pdf(
                     pdf_path=doc_file,
@@ -250,7 +280,7 @@ def batch_extract_documents(
                     output_markdown_path=out_file,
                 )
                 md_content = extracted.markdown_content
-            # 3. Gambar
+            # 5. Gambar
             else:
                 res = pipeline.run(str(doc_file), forced_specs=active_specs)
                 md_content = str(res["markdown_content"])
@@ -300,7 +330,9 @@ def batch_extract_documents(
 
     successful_count = sum(1 for r in processed_results if r["status"] == "success")
     return {
-        "status": "completed" if successful_count == len(files_to_process) else ("partial_failure" if successful_count else "failed"),
+        "status": "completed"
+        if successful_count == len(files_to_process)
+        else ("partial_failure" if successful_count else "failed"),
         "total_selected_files": len(files_to_process),
         "successful_count": successful_count,
         "error_count": len(files_to_process) - successful_count,

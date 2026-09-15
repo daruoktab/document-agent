@@ -17,6 +17,8 @@ from typing import Any, TypedDict, cast
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from .docx import convert_docx_to_pdf, docx_page_count
+from .excel import convert_excel_to_pdf, excel_page_count
 from .pdf import pdf_page_count, pdf_to_images
 from .ppt import count_presentation_slides, render_presentation_slides_to_images
 from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
@@ -106,7 +108,7 @@ def get_subagent_task_directives(
                     "Gunakan identifier bersih (tanpa spasi/simbol) dan beri tanda kutip ganda pada label teks node. "
                     "Jika satu label node terdiri dari beberapa baris atau memuat line break visual, "
                     "WAJIB pertahankan pemisah baris tersebut sebagai tag HTML <br/> di dalam label yang diapit tanda kutip ganda; "
-                    "contoh: A[\"Baris pertama<br/>Baris kedua\"]. Jangan mengganti <br/> dengan spasi atau newline literal "
+                    'contoh: A["Baris pertama<br/>Baris kedua"]. Jangan mengganti <br/> dengan spasi atau newline literal '
                     "di dalam satu baris kode Mermaid, dan jangan menaruh <br/> di luar label node."
                 ),
             },
@@ -176,7 +178,25 @@ class AgentDocumentGraph:
             }
 
         ext = resolved.suffix.lower()
-        if ext in (".pptx", ".ppt"):
+        if ext in (".docx", ".doc"):
+            doc_type = "docx"
+            try:
+                total_items = docx_page_count(resolved)
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "error",
+                    "error": f"Gagal menghitung halaman DOCX: {exc}",
+                }
+        elif ext in (".xlsx", ".xls", ".xlsm", ".ods"):
+            doc_type = "excel"
+            try:
+                total_items = excel_page_count(resolved)
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "error",
+                    "error": f"Gagal menghitung halaman Excel: {exc}",
+                }
+        elif ext in (".pptx", ".ppt"):
             doc_type = "pptx"
             try:
                 total_items = count_presentation_slides(resolved)
@@ -261,13 +281,53 @@ class AgentDocumentGraph:
                 all_pages = pdf_to_images(
                     resolved, output_dir=pages_out, dpi=dpi, image_ext="jpg"
                 )
-                rendered_images = [
-                    str(p) for p in all_pages[start_idx - 1 : end_idx]
-                ]
+                rendered_images = [str(p) for p in all_pages[start_idx - 1 : end_idx]]
             except Exception as exc:  # noqa: BLE001
                 return {
                     "status": "error",
                     "error": f"Gagal merender halaman PDF: {exc}",
+                }
+
+        elif doc_type == "docx":
+            pages_out = resolved_out / "pages"
+            converted_out = resolved_out / "converted"
+            pages_out.mkdir(parents=True, exist_ok=True)
+            converted_out.mkdir(parents=True, exist_ok=True)
+            try:
+                pdf_path = convert_docx_to_pdf(resolved, converted_out)
+                images = pdf_to_images(
+                    pdf_path,
+                    output_dir=pages_out,
+                    dpi=dpi,
+                    image_ext="jpg",
+                    pages=list(range(start_idx - 1, end_idx)),
+                )
+                rendered_images = [str(p) for p in images]
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "error",
+                    "error": f"Gagal merender halaman DOCX: {exc}",
+                }
+
+        elif doc_type == "excel":
+            pages_out = resolved_out / "pages"
+            converted_out = resolved_out / "converted"
+            pages_out.mkdir(parents=True, exist_ok=True)
+            converted_out.mkdir(parents=True, exist_ok=True)
+            try:
+                pdf_path = convert_excel_to_pdf(resolved, converted_out)
+                images = pdf_to_images(
+                    pdf_path,
+                    output_dir=pages_out,
+                    dpi=dpi,
+                    image_ext="jpg",
+                    pages=list(range(start_idx - 1, end_idx)),
+                )
+                rendered_images = [str(p) for p in images]
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "status": "error",
+                    "error": f"Gagal merender halaman Excel: {exc}",
                 }
 
         elif doc_type == "image":
@@ -334,7 +394,11 @@ class AgentDocumentGraph:
         # Menghapus chunk lama adalah aksi destruktif. Hanya lakukan saat pemanggil
         # secara eksplisit menandai re-ekstraksi penuh; batch biasa harus selalu
         # mempertahankan halaman yang telah disimpan sebelumnya.
-        if state.get("reset_existing", False) and current_page_in == 1 and total_items > 1:
+        if (
+            state.get("reset_existing", False)
+            and current_page_in == 1
+            and total_items > 1
+        ):
             for old_p in chunks_dir.glob("page_*.md"):
                 try:
                     num = int(old_p.stem.split("_")[-1])
@@ -374,9 +438,7 @@ class AgentDocumentGraph:
                 continue
 
         all_pages_accumulated.sort(key=lambda x: x.page_number)
-        merged_md = stitch_pages_to_markdown(
-            all_pages_accumulated, is_slide=is_slide
-        )
+        merged_md = stitch_pages_to_markdown(all_pages_accumulated, is_slide=is_slide)
 
         out_md = out_base / f"{resolved.stem}.md"
         out_md.write_text(merged_md, encoding="utf-8")
@@ -415,16 +477,20 @@ class AgentDocumentGraph:
                 )
                 for res in tab_results:
                     if res.status == "success":
-                        tabular_info.append({
-                            "table_name": res.table_name,
-                            "rows_ingested": res.total_rows_ingested,
-                            "columns": res.columns,
-                            "verified": res.verification_report.is_valid
-                            if res.verification_report
-                            else False,
-                        })
+                        tabular_info.append(
+                            {
+                                "table_name": res.table_name,
+                                "rows_ingested": res.total_rows_ingested,
+                                "columns": res.columns,
+                                "verified": res.verification_report.is_valid
+                                if res.verification_report
+                                else False,
+                            }
+                        )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Gagal auto-ingest tabel transaksional ke SQLite: %s", exc)
+                logger.warning(
+                    "Gagal auto-ingest tabel transaksional ke SQLite: %s", exc
+                )
 
         active_tables = (
             TabularDatabaseManager(db_file).get_active_tables_summary()

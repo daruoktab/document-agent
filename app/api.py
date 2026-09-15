@@ -20,7 +20,21 @@ from app.job_tracker import PROJECT_ROOT, JobInfo, JobManager
 
 logger = logging.getLogger(__name__)
 OUTPUT_DIR = PROJECT_ROOT / "output"
-SUPPORTED_TYPES = {".pdf", ".ppt", ".pptx", ".png", ".jpg", ".jpeg", ".webp"}
+SUPPORTED_TYPES = {
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".ods",
+    ".ppt",
+    ".pptx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+}
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 app = FastAPI(
@@ -103,7 +117,11 @@ def plan():
     summary="Ingest satu file",
     response_class=Response,
     responses={
-        200: {"content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}}},
+        200: {
+            "content": {
+                "application/zip": {"schema": {"type": "string", "format": "binary"}}
+            }
+        },
         400: {"description": "File kosong"},
         413: {"description": "File melebihi 100 MiB"},
         415: {"description": "Format file tidak didukung"},
@@ -111,7 +129,14 @@ def plan():
     },
 )
 def ingest(
-    file: Annotated[UploadFile, File(description="PDF, PPT/PPTX, PNG, JPG/JPEG, atau WebP; maksimum 100 MiB")],
+    file: Annotated[
+        UploadFile,
+        File(
+            description=(
+                "PDF, DOC/DOCX, Excel, PPT/PPTX, PNG, JPG/JPEG, atau WebP; maksimum 100 MiB"
+            )
+        ),
+    ],
 ) -> Response:
     """Tunggu ingest selesai lalu unduh ZIP. Pengaturan ekstraksi dipilih otomatis."""
     filename = Path((file.filename or "").replace("\\", "/")).name
@@ -145,13 +170,22 @@ def ingest(
         time.sleep(0.5)
         job = manager.get_job(job.job_id, output_dir=OUTPUT_DIR) or job
     if job.status != "completed":
-        raise HTTPException(500, {"job_id": job.job_id, "message": "Ingest gagal. Periksa log di folder output."})
+        raise HTTPException(
+            500,
+            {
+                "job_id": job.job_id,
+                "message": "Ingest gagal. Periksa log di folder output.",
+            },
+        )
     try:
         archive = build_result_zip(job)
     except (OSError, sqlite3.Error):
         logger.exception("Gagal mengekspor hasil %s", job.job_id)
-        raise HTTPException(500, {"job_id": job.job_id, "message": "Hasil ingest tidak dapat dibaca."}) from None
+        raise HTTPException(
+            500, {"job_id": job.job_id, "message": "Hasil ingest tidak dapat dibaca."}
+        ) from None
     return Response(
-        archive, media_type="application/zip",
+        archive,
+        media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="hasil_ingest.zip"'},
     )

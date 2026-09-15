@@ -39,6 +39,8 @@ from app.batch import (
 )
 from app.cleanup import clean_all_outputs, clean_document_output, migrate_legacy_output
 from app.config import get_settings, setup_logging
+from app.docx import process_multipage_docx
+from app.excel import process_multipage_excel
 from app.graph import DocumentExtractionPipeline
 from app.pdf import pdf_to_images, process_multipage_pdf
 from app.ppt import process_presentation, process_presentation_vision
@@ -57,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         "document",
         nargs="?",
         default=None,
-        help="Path ke file dokumen yang akan diproses (PDF, PPTX, PPT, atau Gambar).",
+        help="Path ke file dokumen yang akan diproses (PDF, DOCX, DOC, Excel, PPTX, PPT, atau Gambar).",
     )
     parser.add_argument(
         "-t",
@@ -259,7 +261,9 @@ def main() -> int:
             )
             return 1
 
-        out_dir = Path(args.out).resolve() if args.out else Path("output/batch").resolve()
+        out_dir = (
+            Path(args.out).resolve() if args.out else Path("output/batch").resolve()
+        )
         batch_result = batch_extract_documents(
             files_to_process,
             output_dir=out_dir,
@@ -331,8 +335,46 @@ def main() -> int:
             print(json.dumps({"file": str(input_path), "specs": specs}, indent=2))
             return 0
 
-        # 5. File Presentasi (PPTX/PPT)
-        if ext in (".pptx", ".ppt"):
+        # 5. File Word (DOCX/DOC) via konversi PDF -> gambar halaman -> VLM
+        if ext in (".docx", ".doc"):
+            logger.info(
+                "Mengekstrak DOCX multi-halaman via konversi PDF -> gambar halaman "
+                "-> Dual-Track VLM & Sub-Agent SQL..."
+            )
+            pipeline = DocumentExtractionPipeline(settings, thorough=args.thorough)
+            doc_result = process_multipage_docx(
+                docx_path=input_path,
+                pipeline=pipeline,
+                forced_specs=args.doc_type,
+                dpi=args.dpi,
+                db_path=db_target_file,
+                force_all_tables=args.force_all_tables,
+                output_markdown_path=markdown_out_file,
+                output_dir=doc_output_dir / "pages",
+            )
+            markdown_content = doc_result.full_markdown
+
+        # 6. File Excel via konversi PDF -> gambar halaman -> VLM
+        elif ext in (".xlsx", ".xls", ".xlsm", ".ods"):
+            logger.info(
+                "Mengekstrak Excel multi-halaman via konversi PDF -> gambar halaman "
+                "-> Dual-Track VLM & Sub-Agent SQL..."
+            )
+            pipeline = DocumentExtractionPipeline(settings, thorough=args.thorough)
+            doc_result = process_multipage_excel(
+                excel_path=input_path,
+                pipeline=pipeline,
+                forced_specs=args.doc_type,
+                dpi=args.dpi,
+                db_path=db_target_file,
+                force_all_tables=args.force_all_tables,
+                output_markdown_path=markdown_out_file,
+                output_dir=doc_output_dir / "pages",
+            )
+            markdown_content = doc_result.full_markdown
+
+        # 7. File Presentasi (PPTX/PPT)
+        elif ext in (".pptx", ".ppt"):
             if args.ppt_native and not args.vision and not args.direct_graph:
                 markdown_content = process_presentation(
                     input_path,
@@ -353,9 +395,11 @@ def main() -> int:
                     output_dir=doc_output_dir / "slides",
                 )
 
-        # 6. File PDF Multi-Halaman
+        # 8. File PDF Multi-Halaman
         elif ext == ".pdf":
-            logger.info("Mengekstrak PDF multi-halaman via Dual-Track Vision & Sub-Agent SQL...")
+            logger.info(
+                "Mengekstrak PDF multi-halaman via Dual-Track Vision & Sub-Agent SQL..."
+            )
             pipeline = DocumentExtractionPipeline(settings, thorough=args.thorough)
             doc_result = process_multipage_pdf(
                 pdf_path=input_path,
@@ -369,7 +413,7 @@ def main() -> int:
             )
             markdown_content = doc_result.full_markdown
 
-        # 7. File Gambar Tunggal
+        # 9. File Gambar Tunggal
         elif ext in (".png", ".jpg", ".jpeg", ".webp"):
             logger.info("Mengekstrak gambar via Dual-Track Vision & Sub-Agent SQL...")
             pipeline = DocumentExtractionPipeline(settings, thorough=args.thorough)
@@ -436,11 +480,15 @@ def main() -> int:
             print("SIMULASI PEMBAGIAN CHUNKING (STAGING / BLUEPRINT):")
             print(f"Total Karakter : {chunks.total_characters}")
             print(f"Total Chunks    : {chunks.total_chunks}")
-            print(f"Target Size     : {chunks.chunk_size} char (overlap: {chunks.chunk_overlap})")
+            print(
+                f"Target Size     : {chunks.chunk_size} char (overlap: {chunks.chunk_overlap})"
+            )
             print(f"Rata-rata Size  : {chunks.avg_chunk_size:.1f} char")
             print("=" * 60)
             for c in chunks.chunks[:3]:
-                print(f"[Chunk #{c.chunk_id} | {c.char_count} chars | ~{c.token_estimate} tokens]")
+                print(
+                    f"[Chunk #{c.chunk_id} | {c.char_count} chars | ~{c.token_estimate} tokens]"
+                )
                 print(f"{c.preview}\n---")
 
         return 0
