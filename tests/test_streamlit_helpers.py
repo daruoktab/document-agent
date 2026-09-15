@@ -15,6 +15,7 @@ from app.streamlit_logic import (
     extract_mermaid_blocks,
     find_pages_containing,
     get_document_images,
+    read_completed_markdown_pages,
     split_markdown_by_pages,
 )
 
@@ -51,6 +52,23 @@ class TestStreamlitHelpers(unittest.TestCase):
         self.assertEqual(len(pages), 2)
         self.assertIn("Judul Presentasi", pages[1])
         self.assertIn("Agenda Rapat", pages[2])
+
+    def test_read_completed_markdown_pages_ignores_page_still_being_written(self) -> None:
+        markdown_file = self.temp_dir / "stream.md"
+        markdown_file.write_text(
+            "<!-- PAGE: 1 -->\nSelesai\n\n---\n"
+            "<!-- PAGE: 2 -->\nMasih ditulis",
+            encoding="utf-8",
+        )
+
+        pages = read_completed_markdown_pages(markdown_file)
+
+        self.assertEqual(pages, {1: "Selesai"})
+
+    def test_read_completed_markdown_pages_handles_missing_file(self) -> None:
+        self.assertEqual(
+            read_completed_markdown_pages(self.temp_dir / "belum-ada.md"), {}
+        )
 
     def test_extract_mermaid_blocks(self) -> None:
         raw_md = (

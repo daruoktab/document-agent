@@ -13,13 +13,22 @@ from app.streamlit_logic import _save_uploaded_files, build_batch_zip
 from app.upload_batches import create_batch, list_batches
 
 
+class UploadedFileStub:
+    def __init__(self, name: str, content: bytes) -> None:
+        self.name = name
+        self._content = content
+
+    def getvalue(self) -> bytes:
+        return self._content
+
+
 class TestUploadBatches(unittest.TestCase):
     def test_same_filename_gets_ordinal_without_overwriting(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            first = SimpleNamespace(name="report.pdf", getvalue=lambda: b"one")
-            second = SimpleNamespace(name="report.pdf", getvalue=lambda: b"two")
-            same = SimpleNamespace(name="report.pdf", getvalue=lambda: b"one")
+            first = UploadedFileStub("report.pdf", b"one")
+            second = UploadedFileStub("report.pdf", b"two")
+            same = UploadedFileStub("report.pdf", b"one")
             self.assertEqual(_save_uploaded_files([first], root)[0].name, "report.pdf")
             self.assertEqual(_save_uploaded_files([second], root)[0].name, "report (1).pdf")
             self.assertEqual(_save_uploaded_files([same], root)[0].name, "report.pdf")
@@ -35,10 +44,14 @@ class TestUploadBatches(unittest.TestCase):
     def test_nested_uploads_deduplicate_and_batch_survives_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            uploads = [SimpleNamespace(name=name, getvalue=lambda content=content: content)
-                       for name, content in [("a/report.pdf", b"one"),
-                                             ("a/nested/report.pdf", b"two"),
-                                             ("b/report.pdf", b"one")]]
+            uploads = [
+                UploadedFileStub(name, content)
+                for name, content in [
+                    ("a/report.pdf", b"one"),
+                    ("a/nested/report.pdf", b"two"),
+                    ("b/report.pdf", b"one"),
+                ]
+            ]
             paths = _save_uploaded_files(uploads, root)
             self.assertEqual(len(paths), 2)
             batch = create_batch(root, "Folder reports", [{"stem": p.stem, "source_name": p.name} for p in paths])

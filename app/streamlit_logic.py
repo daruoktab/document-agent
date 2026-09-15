@@ -197,6 +197,21 @@ def split_markdown_by_pages(markdown_text: str) -> dict[int, str]:
     return {1: markdown_text}
 
 
+def read_completed_markdown_pages(markdown_file: Path) -> dict[int, str]:
+    """Baca halaman yang sudah ditulis lengkap oleh proses ekstraksi aktif."""
+    try:
+        markdown_text = markdown_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+
+    pages = split_markdown_by_pages(markdown_text) if markdown_text.strip() else {}
+    return {
+        page_number: content.removesuffix("---").rstrip()
+        for page_number, content in pages.items()
+        if content.rstrip().endswith("---")
+    }
+
+
 def extract_mermaid_blocks(text: str) -> list[str]:
     """Cari seluruh blok ```mermaid ... ``` dalam dokumen markdown."""
     pattern = r"```(?:mermaid)\s*\n(.*?)\n```"
@@ -458,6 +473,36 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
     # Kotak informasi background safety & path file log fisik
     log_file_str = str(job.latest_log_path.resolve()) if job.latest_log_path else "output/logs/..."
     st.info(f"📌 Aktivitas terakhir: {job.last_message or 'Sedang menyiapkan proses...'}")
+
+    completed_pages = read_completed_markdown_pages(job.out_file)
+    if completed_pages:
+        st.markdown("#### 👀 Preview halaman yang sudah selesai")
+        st.caption(
+            "Preview ini diperbarui otomatis. Isi akhir dapat berubah setelah pemeriksaan "
+            "dan penyatuan seluruh dokumen selesai."
+        )
+        available_pages = sorted(completed_pages)
+        selected_page = st.selectbox(
+            "Pilih halaman / slide yang sudah selesai",
+            available_pages,
+            index=len(available_pages) - 1,
+            format_func=lambda page_number: f"Halaman / Slide {page_number}",
+            key=f"live_preview_page_{stem}",
+        )
+        images = get_document_images(stem, output_path)
+        preview_text = completed_pages[selected_page]
+        if 0 < selected_page <= len(images):
+            image_col, text_col = st.columns([1.1, 1], gap="medium")
+            with image_col:
+                st.image(
+                    str(images[selected_page - 1]),
+                    caption=f"Dokumen asli · halaman / slide {selected_page}",
+                    use_container_width=True,
+                )
+            with text_col:
+                st.markdown(preview_text)
+        else:
+            st.markdown(preview_text)
 
     # Tampilan log real-time streaming
     with st.expander("Lihat detail teknis proses"):
