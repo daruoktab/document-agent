@@ -835,19 +835,21 @@ class JobManager:
         # 1. Dari memori job aktif
         with self._lock:
             for stem, job in self._jobs.items():
+                if job.output_dir.resolve() != output_dir.resolve():
+                    continue
                 seen_stems.add(stem)
                 docs.append({
                     "stem": stem,
                     "status": job.status,
                     "stage": job.stage,
                     "page_count": job.total_pages or job.current_page or 0,
-                    "mtime": 9999999999.0 if job.status == "running" else 0.0,
+                    "mtime": job.status_file.stat().st_mtime if job.status_file.exists() else 0.0,
                 })
 
         # 2. Dari direktori output di disk
         if output_dir.exists():
             for item in output_dir.iterdir():
-                if not item.is_dir() or item.name in ("logs", "databases", "csv", "uploads", "cache"):
+                if not item.is_dir() or item.name in ("logs", "databases", "csv", "uploads", "cache", "batches"):
                     continue
                 stem = item.name
                 if stem in seen_stems:
@@ -855,7 +857,8 @@ class JobManager:
 
                 md_file = item / f"{stem}.md"
                 db_file = item / "databases" / f"{stem}.sqlite"
-                if not md_file.exists() and not db_file.exists():
+                status_file = item / "logs" / f"{stem}_status.json"
+                if not md_file.exists() and not db_file.exists() and not status_file.exists():
                     continue
 
                 seen_stems.add(stem)
@@ -867,7 +870,7 @@ class JobManager:
                 elif slides_dir.exists():
                     page_count = len(list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg")))
 
-                mtime = md_file.stat().st_mtime if md_file.exists() else item.stat().st_mtime
+                mtime = max(path.stat().st_mtime for path in (item, md_file, status_file) if path.exists())
                 job = self.get_job(stem, output_dir=output_dir)
                 status = job.status if job else "completed"
                 stage = job.stage if job else "Selesai"
@@ -880,7 +883,7 @@ class JobManager:
                     "mtime": mtime,
                 })
 
-        docs.sort(key=lambda d: (d["status"] == "running", d["mtime"]), reverse=True)
+        docs.sort(key=lambda d: (d["status"] in {"queued", "running"}, d["mtime"]), reverse=True)
         return docs
 
     def get_latest_logs(self, stem: str, line_count: int = 40) -> str:
