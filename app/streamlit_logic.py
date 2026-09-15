@@ -13,7 +13,7 @@ Fitur Utama:
 
 from __future__ import annotations
 
-import hashlib
+import json
 import re
 import sqlite3
 import sys
@@ -40,6 +40,7 @@ class UploadedFileLike(Protocol):
 
 from app.job_tracker import JobManager, is_pid_alive
 from app.tabular_db import cross_verify_dual_track
+from app.upload_batches import create_batch, list_batches
 
 SUPPORTED_TYPES = ["pdf", "pptx", "ppt", "png", "jpg", "jpeg", "webp"]
 
@@ -63,11 +64,21 @@ def _save_uploaded_file(uploaded_file: UploadedFileLike, output_dir: Path) -> Pa
     uploads_dir.mkdir(parents=True, exist_ok=True)
     name = Path(uploaded_file.name.replace("\\", "/")).name
     content = uploaded_file.getvalue()
-    identity = hashlib.sha256(name.encode("utf-8") + b"\0" + content).hexdigest()[:16]
-    target_path = uploads_dir / f"{Path(name).stem}_{identity}{Path(name).suffix.lower()}"
-    if not target_path.exists():
-        target_path.write_bytes(content)
-    return target_path
+    suffix = Path(name).suffix.lower()
+    stem = Path(name).stem
+
+    # Rerun Streamlit tidak membuat salinan baru untuk upload yang sama persis.
+    for existing in uploads_dir.glob(f"*{suffix}"):
+        if existing.is_file() and existing.read_bytes() == content:
+            return existing
+
+    candidate = uploads_dir / f"{stem}{suffix}"
+    ordinal = 1
+    while candidate.exists():
+        candidate = uploads_dir / f"{stem} ({ordinal}){suffix}"
+        ordinal += 1
+    candidate.write_bytes(content)
+    return candidate
 
 
 def _save_uploaded_files(
@@ -75,7 +86,7 @@ def _save_uploaded_files(
     output_dir: Path,
 ) -> list[Path]:
     """Simpan beberapa file upload dan kembalikan path dalam urutan pilihan user."""
-    return [_save_uploaded_file(uploaded_file, output_dir) for uploaded_file in uploaded_files]
+    return list(dict.fromkeys(_save_uploaded_file(uploaded_file, output_dir) for uploaded_file in uploaded_files))
 
 
 def _get_sqlite_db_for_file(file_stem: str, output_dir: Path) -> Path | None:
@@ -247,6 +258,48 @@ def build_document_zip(stem: str, output_dir: Path) -> bytes:
             archived_paths.add(resolved_path)
 
     return archive_buffer.getvalue()
+
+
+def build_batch_zip(batch: dict[str, Any], output_dir: Path) -> bytes:
+    """One ZIP with independent document folders and a durable batch manifest."""
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("batch.json", json.dumps(batch, ensure_ascii=False, indent=2))
+        for doc in batch["documents"]:
+            stem = doc["stem"]
+            if not stem or stem in {".", ".."} or "/" in stem or "\\" in stem:
+                raise ValueError("Identitas dokumen tidak valid")
+            with ZipFile(BytesIO(build_document_zip(stem, output_dir))) as document_zip:
+                for entry in document_zip.infolist():
+                    archive.writestr(f"{stem}/{entry.filename}", document_zip.read(entry))
+    return buffer.getvalue()
+
+
+def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
+    st.subheader(batch["name"])
+    st.caption(f"Dibuat {batch['created_at']} · {len(batch['documents'])} dokumen unik")
+    manager = JobManager.get_instance()
+    jobs = [manager.get_job(doc["stem"], output_dir=output_dir) for doc in batch["documents"]]
+    busy = any(job and job.status in {"queued", "running"} for job in jobs)
+    completed = sum(bool(job and job.status == "completed") for job in jobs)
+    st.write(f"{completed} dari {len(jobs)} dokumen selesai")
+    if busy:
+        st.info("ZIP dapat disiapkan setelah semua proses batch berhenti. Klik Segarkan histori untuk memperbarui.")
+    elif completed != len(jobs):
+        st.warning("Sebagian dokumen belum selesai atau gagal. ZIP hanya berisi hasil yang tersedia; periksa status tiap dokumen.")
+    if st.button("Siapkan ZIP seluruh hasil", key=f"prepare_{batch['id']}", disabled=busy):
+        with st.spinner("Mengemas hasil batch..."):
+            data = build_batch_zip(batch, output_dir)
+            directory = output_dir / "batches" / batch["id"]
+            temporary = directory / "hasil.zip.tmp"
+            temporary.write_bytes(data)
+            temporary.replace(directory / "hasil.zip")
+    zip_path = output_dir / "batches" / batch["id"] / "hasil.zip"
+    if zip_path.exists() and not busy:
+        st.caption("ZIP adalah salinan saat terakhir disiapkan. Siapkan ulang setelah menjalankan ulang dokumen.")
+        with zip_path.open("rb") as archive:
+            st.download_button("Unduh ZIP batch", archive, file_name=f"batch_{batch['id']}.zip",
+                               mime="application/zip", key=f"download_{batch['id']}")
 
 
 def table_csv_bytes(conn: sqlite3.Connection, table: str) -> bytes:
@@ -905,43 +958,53 @@ def main() -> None:
 
         all_docs = job_manager.list_all_documents(output_dir=output_dir)
 
-        doc_options: dict[str, str | None] = {"➕ [Unggah Dokumen Baru]": None}
-        for doc in all_docs:
-            stem = doc["stem"]
-            status = doc["status"]
-            badge = (
-                "⏳"
-                if status == "running"
-                else ("🟢" if status == "completed" else "❌")
-            )
-            pg_info = (
-                f" ({doc['page_count']} hal)" if doc.get("page_count") else ""
-            )
-            label = f"{badge} {stem[:28]}...{pg_info}"
-            doc_options[label] = stem
+        batches = list_batches(output_dir)
+        st.markdown("### Histori batch")
+        batch_query = st.text_input("Cari batch atau nama file", key="batch_search").casefold()
+        for batch in batches:
+            if batch_query and batch_query not in (batch["name"] + " " + " ".join(
+                doc.get("source_name", doc["stem"]) for doc in batch["documents"]
+            )).casefold():
+                continue
+            with st.expander(f"{batch['name']} · {len(batch['documents'])} file · {batch['created_at'][:10]}"):
+                st.caption(batch["created_at"])
+                if st.button("Buka batch", key=f"history_batch_{batch['id']}"):
+                    st.session_state["selected_batch_id"] = batch["id"]
+                    st.session_state["selected_stem"] = batch["documents"][0]["stem"] if batch["documents"] else None
+                    st.rerun()
+        if not batches:
+            st.caption("Batch upload baru akan tercatat di sini, termasuk setelah restart.")
 
-        current_selected = st.session_state.get("selected_stem")
-        if current_selected and current_selected not in doc_options.values():
-            doc_options[f"⏳ {current_selected} (Aktif)"] = current_selected
+        st.markdown("### Histori dokumen")
+        query = st.text_input("Cari nama dokumen", key="document_search").casefold()
+        status_labels = {"queued": "Menunggu", "running": "Diproses", "completed": "Selesai",
+                         "failed": "Gagal", "canceled": "Dibatalkan"}
+        status_filter = st.selectbox("Filter status", ["all", *status_labels],
+                                     format_func=lambda value: status_labels.get(value, "Semua status"))
+        visible_docs = [doc for doc in all_docs if query in doc["stem"].casefold()
+                        and (status_filter == "all" or doc["status"] == status_filter)]
+        options = [None, *[doc["stem"] for doc in visible_docs]]
+        current = st.session_state.get("selected_stem")
+        if current and current not in options:
+            options.append(current)
+        doc_by_stem = {doc["stem"]: doc for doc in all_docs}
 
-        selected_label_idx = 0
-        if current_selected is not None:
-            for idx, (lbl, val) in enumerate(doc_options.items()):
-                if val == current_selected:
-                    selected_label_idx = idx
-                    break
+        def document_label(stem: str | None) -> str:
+            if stem is None:
+                return "➕ Unggah dokumen baru"
+            doc = doc_by_stem.get(stem, {})
+            return f"{status_labels.get(doc.get('status', ''), 'Tidak diketahui')} · {stem}"
 
-        st.markdown("### 📂 Dokumen")
-        chosen_label = st.selectbox(
-            "Pilih dokumen:",
-            options=list(doc_options.keys()),
-            index=selected_label_idx,
-            help="Dokumen yang pernah diproses tetap tersedia setelah halaman dimuat ulang.",
-        )
-        new_selected_stem = doc_options[chosen_label]
-
-        if new_selected_stem != st.session_state.get("selected_stem"):
-            st.session_state["selected_stem"] = new_selected_stem
+        chosen_stem = st.selectbox("Pilih dokumen", options, index=options.index(current),
+                                   format_func=document_label)
+        st.caption(f"{len(visible_docs)} dari {len(all_docs)} dokumen · antrean aktif di atas, lalu terbaru")
+        if chosen_stem != current:
+            st.session_state["selected_stem"] = chosen_stem
+            st.session_state["selected_batch_id"] = None
+            st.rerun()
+        if st.button("Upload baru"):
+            st.session_state["selected_stem"] = None
+            st.session_state["selected_batch_id"] = None
             st.rerun()
 
         st.markdown("---")
@@ -965,35 +1028,15 @@ def main() -> None:
             )
 
         st.markdown("---")
-        st.markdown("#### 🕒 Dokumen terbaru")
-        if all_docs:
-            for doc in all_docs[:6]:
-                stem = doc["stem"]
-                status = doc["status"]
-                status_icon = (
-                    "⏳"
-                    if status in {"queued", "running"}
-                    else ("🟢" if status == "completed" else "❌")
-                )
-                col_btn1, col_btn2 = st.columns([3.5, 1])
-                with col_btn1:
-                    st.caption(f"{status_icon} **{stem[:22]}...**")
-                with col_btn2:
-                    if st.button("Buka", key=f"btn_nav_{stem}"):
-                        st.session_state["selected_stem"] = stem
-                        st.rerun()
-        else:
-            st.caption("(Belum ada dokumen yang diproses)")
-
-        if st.button("🔄 Segarkan Daftar Dokumen", use_container_width=True):
+        if st.button("🔄 Segarkan histori", use_container_width=True):
             st.rerun()
 
-    # Main Area Router
     active_stem = st.session_state.get("selected_stem")
-
-    batch_stems = st.session_state.get("batch_upload_stems", [])
-    if len(batch_stems) > 1:
-        render_batch_monitor(batch_stems, output_dir)
+    selected_batch = next((batch for batch in batches
+                           if batch["id"] == st.session_state.get("selected_batch_id")), None)
+    if selected_batch:
+        render_batch_download(selected_batch, output_dir)
+        render_batch_monitor([doc["stem"] for doc in selected_batch["documents"]], output_dir)
 
     if active_stem is None:
         # MODE 1: UNGGAH DOKUMEN BARU
@@ -1004,15 +1047,33 @@ def main() -> None:
         )
 
         uploaded_files = st.file_uploader(
-            "Pilih file dokumen:",
+            "Pilih satu atau beberapa file:",
             type=SUPPORTED_TYPES,
             accept_multiple_files=True,
-            help="Anda dapat memilih beberapa file sekaligus. Proses tetap berjalan saat berpindah halaman.",
+            key="document_files_uploader",
+            help="Pilih beberapa PDF, PPT/PPTX, PNG, JPG, atau WebP sekaligus.",
         )
+        uploaded_directory = st.file_uploader(
+            "Atau pilih satu folder:",
+            type=SUPPORTED_TYPES,
+            accept_multiple_files="directory",
+            key="document_directory_uploader",
+            help=(
+                "Semua file yang didukung di dalam folder (termasuk subfolder) "
+                "akan dimasukkan ke antrean ingest. Pilihan folder dapat digabung "
+                "dengan pilihan file di atas."
+            ),
+        )
+
+        # Streamlit/browser hanya menyediakan satu dialog folder per widget.
+        # Gabungkan hasil folder dengan file biasa agar semuanya dapat diproses
+        # melalui tombol yang sama, tanpa mengubah pipeline ingest.
+        uploaded_files = list(uploaded_files or []) + list(uploaded_directory or [])
 
         if uploaded_files:
             saved_files = _save_uploaded_files(uploaded_files, output_dir)
-            st.markdown(f"**{len(saved_files)} file siap diproses**")
+            st.markdown(f"**{len(saved_files)} file unik siap diproses**")
+            batch_name = st.text_input("Nama kelompok hasil", value="Upload dokumen")
             uploaded_rows = []
             for path in saved_files:
                 existing_job = job_manager.get_job(path.stem, output_dir=output_dir)
@@ -1034,6 +1095,12 @@ def main() -> None:
                 type="primary",
                 use_container_width=True,
             ):
+                documents = []
+                for uploaded in uploaded_files:
+                    path = _save_uploaded_file(uploaded, output_dir)
+                    documents.append({"stem": path.stem, "source_name": uploaded.name})
+                batch = create_batch(output_dir, batch_name, documents)
+                st.session_state["selected_batch_id"] = batch["id"]
                 started_jobs = []
                 for saved_file in saved_files:
                     job = job_manager.start_job(
