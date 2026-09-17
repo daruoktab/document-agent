@@ -425,44 +425,22 @@ def render_mermaid_to_png(
         return False, None, "Pustaka 'pymmdc' tidak terinstal"
 
     try:
-        _ = timeout
-        diagram = mmdc.render(
-            mermaid_code,
-            backend="js",
-            theme=theme,
-            config={
-                "theme": theme,
-                "themeVariables": {
-                    "background": background_color,
-                },
-            },
-        )
-        render_background = (
-            None if background_color == "transparent" else background_color
-        )
-
-        if output_path:
-            out_file = Path(output_path)
-            diagram.save(
-                str(out_file),
-                width=float(width),
-                height=float(height),
-                background=render_background,
-                format="png",
+        converter = mmdc.LocalMermaidConverter(timeout=timeout)
+        try:
+            converter.set_config(
+                width=width,
+                height=height,
+                backgroundColor=background_color,
+                theme=theme,
             )
-            if out_file.exists():
-                png_bytes = out_file.read_bytes()
-                return True, png_bytes, None
-            return False, None, "Konversi Mermaid ke PNG gagal"
-        else:
-            png_bytes = diagram.png(
-                width=float(width),
-                height=float(height),
-                background=render_background,
-            )
-            if png_bytes:
-                return True, png_bytes, None
-            return False, None, "Output PNG kosong dari compiler Mermaid"
+            png_bytes = converter.convert_to_png(mermaid_code)
+            if not png_bytes:
+                return False, None, "Output PNG kosong dari compiler Mermaid"
+            if output_path:
+                Path(output_path).write_bytes(png_bytes)
+            return True, png_bytes, None
+        finally:
+            converter.cleanup()
 
     except Exception as exc:  # noqa: BLE001
         err_msg = str(exc)

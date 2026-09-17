@@ -1,0 +1,20 @@
+[Unit]
+Description=OCR Agent Streamlit
+After=network.target llama-server.service
+Requires=llama-server.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/jds-magang-ocr-agent
+Environment=PYTHONUNBUFFERED=1
+Environment="PATH=%h/jds-magang-ocr-agent/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/bin/bash %h/jds-magang-ocr-agent/deploy/systemd/logged-exec.sh %h/jds-magang-ocr-agent/logs/streamlit.log %h/jds-magang-ocr-agent/.venv/bin/streamlit run app/streamlit_logic.py --server.address 0.0.0.0 --server.port 8501
+TimeoutStopSec=60
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

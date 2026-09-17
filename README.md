@@ -1,9 +1,9 @@
-# jds-magang-document-extractor — Vision VLM Document Extractor (Structured Markdown, Tabular SQLite Database, & Mermaid Diagrams)
+# jds-magang-document-extractor — OCR + Vision VLM Document Extractor
 
-Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**, **Engine Data Tabular Transaksional ke SQLite** untuk data log mutasi/rekening koran/faktur yang memerlukan kalkulasi agregat berpresisi 100% (SUM, AVG, COUNT, filter tanggal), serta **Sub-Agent Spesialis Diagram** untuk mengevaluasi secara selektif dan mengekstrak diagram visual/topologi menjadi kode **Mermaid.js** yang valid.
+Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Unlimited-OCR membuat draft dan grounding region, sedangkan Vision LLM utama menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
 
 > ℹ️ **Catatan Branch:** 
-> Fitur pipeline ekstraksi difokuskan pada format Markdown terstruktur, Tabular SQLite Database, dan Diagram Mermaid berbasis Vision Language Model murni (VLM). Modul rancang bangun RAG (staging blueprint: chunking, embedding, vector store interface) disimpan rapi pada modul terpisah `app/rag_staging.py` untuk fase pengembangan berikutnya.
+> Branch `experiment/ocr-model-v2` memakai dua server llama.cpp: VLM utama dan OCR pada port terpisah. Jika `OCR_MODEL` kosong atau endpoint OCR gagal, ekstraksi otomatis fallback ke VLM utama. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
 
 ---
 
@@ -20,7 +20,7 @@ Lihat [panduan pembelajaran dan perintah admin](docs/PEMBELAJARAN.md).
 - **Python**: `>= 3.12` (disarankan menggunakan Conda/venv dan manajer paket `uv`).
 - **Node.js & npm**: `>= 18` (diperlukan untuk engine compiler rendering Mermaid CLI lokal).
 - **LibreOffice**: Diperlukan jika memproses file presentasi PowerPoint (`.ppt`/`.pptx`) via mode headless.
-- **Local Vision LLM**: Endpoint OpenAI-compatible yang menjalankan Vision Language Model (mis. LM Studio, Ollama, atau vLLM dengan model seperti `Qwen2.5-VL` / `Qwen-VL-35B`).
+- **Dua endpoint OpenAI-compatible**: server Vision LLM utama dan server Unlimited-OCR/DeepSeek-OCR-aware llama.cpp pada port berbeda.
 
 ### 2. Langkah Instalasi (Step-by-Step)
 
@@ -44,15 +44,28 @@ npx puppeteer browsers install chrome-headless-shell
 ```
 
 ### 3. Konfigurasi Environment Variable (`.env`)
-Buat berkas `.env` di direktori utama repositori dengan konfigurasi endpoint model Vision Anda:
+Buat berkas `.env` di direktori utama repositori. Model OCR sengaja boleh dikosongkan sampai alias di server siap:
 
 ```env
-VLM_BASE_URL="http://localhost:1234/v1"
-VLM_MODEL="qwen-35b-vision"
-VLM_API_KEY="lm-studio"
-# Batas proses dokumen bersamaan di Streamlit; gunakan 1 untuk satu endpoint VLM.
-MAX_CONCURRENT_EXTRACTIONS="1"
+BASE_URL=http://127.0.0.1:8080/v1
+VLM_MODEL=Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
+VLM_ENABLE_THINKING=false
+VLM_TEMPERATURE=0.1
+VLM_TIMEOUT=300
+
+OCR_BASE_URL=http://127.0.0.1:8081/v1
+OCR_MODEL=
+OCR_TEMPERATURE=0.0
+OCR_TIMEOUT=300
+OCR_PROMPT=<|grounding|>Convert the document to markdown.
+OCR_MIN_TRUST_SCORE=0.72
+OCR_MEDIUM_TRUST_SCORE=0.48
+OCR_ROTATION_RETRY=true
+OCR_BLANK_INK_RATIO=0.0002
+OCR_SPARSE_INK_RATIO=0.015
 ```
+
+Ketika `OCR_MODEL` diisi, OCR menjadi sumber draft Markdown utama hanya setelah lolos quality gate. Pipeline mengoreksi orientasi, membandingkan hasil dengan text-layer PDF bila tersedia, mencoba rotasi alternatif pada kandidat berisiko, dan memakai ekstraksi VLM independen saat trust OCR rendah. Grounding `table` dan `figure` dipotong ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman untuk masa setup karena mengaktifkan fallback VLM.
 
 ---
 
@@ -225,16 +238,17 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
       "command": "python",
       "args": ["-m", "app.mcp_server"],
       "env": {
-        "VLM_BASE_URL": "http://localhost:1234/v1",
-        "VLM_MODEL": "qwen-35b-vision",
-        "VLM_API_KEY": "lm-studio"
+        "BASE_URL": "http://127.0.0.1:8080/v1",
+        "VLM_MODEL": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
+        "OCR_BASE_URL": "http://127.0.0.1:8081/v1",
+        "OCR_MODEL": "unlimited-ocr"
       }
     }
   }
 }
 ```
 
-> Endpoint OpenAI-compatible apa pun didukung (LM Studio, llama-server, remote) — cukup ubah env `VLM_BASE_URL` / `VLM_MODEL` / `VLM_API_KEY`.
+> Kedua endpoint memakai API OpenAI-compatible. `BASE_URL` khusus VLM utama; `OCR_BASE_URL` khusus proses OCR.
 
 ---
 

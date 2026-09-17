@@ -57,6 +57,10 @@ class PageInspectionResult(BaseModel):
     document_title: str | None = Field(
         default=None, description="Judul utama dokumen jika terdeteksi (terutama di halaman 1)"
     )
+    rotation_degrees: Literal[0, 90, 180, 270] = Field(
+        default=0,
+        description="Rotasi searah jarum jam yang diperlukan agar halaman tegak",
+    )
 
     def __getitem__(self, key: str) -> Any:
         """Kompatibilitas backward untuk akses dict: insp_res['specs']."""
@@ -65,6 +69,61 @@ class PageInspectionResult(BaseModel):
     def get(self, key: str, default: Any = None) -> Any:
         """Kompatibilitas backward untuk get dict: insp_res.get('has_diagram')."""
         return getattr(self, key, default)
+
+
+class OCRRegion(BaseModel):
+    """Satu region grounding hasil OCR yang sudah dipetakan ke piksel sumber."""
+
+    index: int = Field(..., ge=1)
+    label: str = Field(default="unknown")
+    kind: Literal["text", "table", "figure", "unknown"] = Field(default="unknown")
+    text: str = Field(default="")
+    bbox_model: tuple[float, float, float, float]
+    bbox_pixels: tuple[int, int, int, int]
+    crop_path: str | None = None
+
+
+class OCRQualityAssessment(BaseModel):
+    """Sinyal kualitas OCR yang dapat diaudit sebelum hasilnya dipercaya."""
+
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    trust_level: Literal["high", "medium", "low"] = Field(default="low")
+    risk_flags: list[str] = Field(default_factory=list)
+    ink_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    horizontal_energy: float = Field(default=0.0, ge=0.0)
+    vertical_energy: float = Field(default=0.0, ge=0.0)
+    native_text_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    is_blank: bool = False
+    is_sparse: bool = False
+    right_angle_suspected: bool = False
+
+
+class OCRExtractionResult(BaseModel):
+    """Hasil OCR halaman, termasuk Markdown bersih dan region grounding."""
+
+    status: Literal["success", "disabled", "error"] = Field(default="success")
+    markdown: str = Field(default="")
+    raw_response: str = Field(default="")
+    model: str = Field(default="")
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    regions: list[OCRRegion] = Field(default_factory=list)
+    manifest_path: str | None = None
+    error: str | None = None
+    decision: Literal[
+        "accepted",
+        "retried_rotated",
+        "low_trust",
+        "blank_page",
+        "error",
+        "disabled",
+    ] = Field(default="accepted")
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    trust_level: Literal["high", "medium", "low"] = Field(default="low")
+    risk_flags: list[str] = Field(default_factory=list)
+    rotation_degrees: Literal[0, 90, 180, 270] = 0
+    oriented_image_path: str | None = None
+    native_text_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    candidate_scores: dict[str, float] = Field(default_factory=dict)
 
 
 class JudgeAuditDecision(BaseModel):
@@ -132,6 +191,27 @@ class PipelinePageResult(BaseModel):
     document_title: str | None = Field(
         default=None, description="Judul utama dokumen jika terdeteksi"
     )
+    ocr_status: Literal[
+        "accepted",
+        "retried_rotated",
+        "corrected_by_vlm",
+        "fallback_vlm",
+        "blank_page",
+        "success",
+        "disabled",
+        "fallback",
+        "error",
+    ] = Field(
+        default="disabled", description="Status pemakaian model OCR pada halaman"
+    )
+    ocr_model: str = Field(default="", description="Nama model OCR yang dipakai")
+    ocr_latency_ms: float = Field(default=0.0, ge=0.0)
+    ocr_regions: list[OCRRegion] = Field(default_factory=list)
+    region_manifest_path: str | None = None
+    ocr_quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    ocr_trust_level: Literal["high", "medium", "low"] = Field(default="low")
+    ocr_risk_flags: list[str] = Field(default_factory=list)
+    rotation_degrees: Literal[0, 90, 180, 270] = 0
 
     def __getitem__(self, key: str) -> Any:
         """Kompatibilitas backward untuk akses berbasis dict: result['markdown_content']."""

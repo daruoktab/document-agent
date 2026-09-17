@@ -67,6 +67,25 @@ def pdf_page_count(pdf_path: str | Path) -> int:
         ) from err
 
 
+def extract_pdf_native_text_by_page(pdf_path: str | Path) -> dict[int, str]:
+    """Ambil text-layer PDF per halaman sebagai bukti independen untuk quality gate OCR."""
+    path_obj = Path(pdf_path).resolve()
+    try:
+        import pymupdf
+
+        document = pymupdf.open(str(path_obj))
+        try:
+            return {
+                page_index + 1: document[page_index].get_text("text", sort=True).strip()
+                for page_index in range(len(document))
+            }
+        finally:
+            document.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Text-layer PDF tidak tersedia untuk quality gate OCR: %s", exc)
+        return {}
+
+
 def pdf_to_images(
     pdf_path: str | Path,
     output_dir: str | Path | None = None,
@@ -259,6 +278,7 @@ def process_multipage_pdf(
         Path(source_file_for_records).name if source_file_for_records else pdf_path.name
     )
     total_pages = pdf_page_count(pdf_path)
+    native_text_by_page = extract_pdf_native_text_by_page(pdf_path)
 
     if pipeline is None:
         from .graph import DocumentExtractionPipeline
@@ -340,6 +360,11 @@ def process_multipage_pdf(
                 forced_specs=active_forced,
                 previous_page_context=previous_context,
                 is_first_page=(idx == 1),
+                page_number=idx,
+                region_output_dir=(
+                    pages_render_dir.parent / "regions" / f"page_{idx:04d}"
+                ),
+                native_text=native_text_by_page.get(idx),
             )
 
             from .tabular_db import sanitize_markdown_tables

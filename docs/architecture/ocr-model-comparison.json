@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Main vs Branch OCR dengan Quality Gate",
+    "quality_profile": "showcase",
+    "viewBox": [1390, 720]
+  },
+  "components": [
+    {
+      "id": "document-input",
+      "type": "external",
+      "label": "Dokumen Masuk",
+      "sublabel": "PDF · Office · gambar",
+      "pos": [18, 292],
+      "size": [148, 82]
+    },
+    {
+      "id": "main-render",
+      "type": "backend",
+      "label": "Render & Preprocess",
+      "sublabel": "Halaman menjadi citra",
+      "tag": "MAIN · AKTIF",
+      "pos": [205, 72],
+      "size": [160, 82]
+    },
+    {
+      "id": "main-vlm",
+      "type": "cloud",
+      "label": "VLM Utama",
+      "sublabel": "Membaca + menyusun + judge",
+      "tag": "MAIN · AKTIF",
+      "pos": [455, 72],
+      "size": [180, 82]
+    },
+    {
+      "id": "main-specialists",
+      "type": "backend",
+      "label": "Specialist Aktif",
+      "sublabel": "Diagram · tabel · hierarchy",
+      "tag": "MAIN · AKTIF",
+      "pos": [735, 72],
+      "size": [170, 82]
+    },
+    {
+      "id": "branch-render",
+      "type": "backend",
+      "label": "Render & Preprocess",
+      "sublabel": "Satu citra per halaman",
+      "tag": "TARGET · PAKAI ULANG",
+      "pos": [205, 420],
+      "size": [160, 82]
+    },
+    {
+      "id": "orientation-gate",
+      "type": "security",
+      "label": "Inspeksi & Orientasi",
+      "sublabel": "VLM memilih 0/90/180/270°",
+      "tag": "BRANCH · DIIMPLEMENTASIKAN",
+      "pos": [410, 420],
+      "size": [190, 82]
+    },
+    {
+      "id": "unlimited-ocr",
+      "type": "cloud",
+      "label": "Unlimited-OCR",
+      "sublabel": "Draft Markdown + bounding box",
+      "tag": "BRANCH · DIIMPLEMENTASIKAN",
+      "pos": [645, 420],
+      "size": [180, 82]
+    },
+    {
+      "id": "native-text",
+      "type": "database",
+      "label": "Bukti Native PDF",
+      "sublabel": "Text-layer per halaman",
+      "tag": "BRANCH · DIIMPLEMENTASIKAN",
+      "pos": [645, 570],
+      "size": [180, 82]
+    },
+    {
+      "id": "quality-gate",
+      "type": "security",
+      "label": "OCR Quality Gate",
+      "sublabel": "Trust score + retry rotasi",
+      "tag": "BRANCH · DIIMPLEMENTASIKAN",
+      "pos": [890, 420],
+      "size": [185, 82]
+    },
+    {
+      "id": "branch-vlm",
+      "type": "cloud",
+      "label": "VLM Independen",
+      "sublabel": "Fallback ekstraksi + judge",
+      "tag": "BRANCH · DIIMPLEMENTASIKAN",
+      "pos": [1120, 420],
+      "size": [185, 82]
+    },
+    {
+      "id": "branch-specialists",
+      "type": "backend",
+      "label": "Specialist Berbasis Region",
+      "sublabel": "Crop · Mermaid · SQLite",
+      "tag": "BRANCH · DIIMPLEMENTASIKAN",
+      "pos": [1120, 570],
+      "size": [185, 82]
+    },
+    {
+      "id": "document-output",
+      "type": "external",
+      "label": "Output Dokumen",
+      "sublabel": "Markdown · data · crop",
+      "pos": [1210, 270],
+      "size": [154, 82]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "MAIN · AKTIF",
+      "wraps": ["main-render", "main-vlm", "main-specialists"],
+      "pad": 34
+    },
+    {
+      "kind": "region",
+      "label": "BRANCH OCR · IMPLEMENTASI",
+      "wraps": ["branch-render", "orientation-gate", "unlimited-ocr", "native-text", "quality-gate", "branch-vlm", "branch-specialists"],
+      "pad": 34
+    }
+  ],
+  "connections": [
+    {"id": "input-main", "from": "document-input", "to": "main-render", "variant": "default"},
+    {"id": "main-render-vlm", "from": "main-render", "to": "main-vlm", "label": "gambar halaman", "labelAt": [405, 170]},
+    {"id": "main-vlm-specialists", "from": "main-vlm", "to": "main-specialists", "label": "delegasi kompleks", "labelAt": [660, 170]},
+    {"id": "main-specialists-output", "from": "main-specialists", "to": "document-output", "label": "hasil final", "fromSide": "right", "toSide": "top", "via": [[950, 113], [1287, 113]], "labelAt": [1110, 99]},
+    {"id": "input-branch", "from": "document-input", "to": "branch-render", "variant": "emphasis"},
+    {"id": "branch-render-orient", "from": "branch-render", "to": "orientation-gate", "label": "citra halaman", "variant": "emphasis", "labelAt": [388, 416]},
+    {"id": "orient-ocr", "from": "orientation-gate", "to": "unlimited-ocr", "label": "citra tegak", "variant": "emphasis", "labelAt": [623, 416]},
+    {"id": "ocr-quality", "from": "unlimited-ocr", "to": "quality-gate", "label": "draft + bbox + sinyal", "variant": "emphasis", "labelAt": [858, 416]},
+    {"id": "native-quality", "from": "native-text", "to": "quality-gate", "label": "pembanding teks", "variant": "security"},
+    {"id": "quality-vlm", "from": "quality-gate", "to": "branch-vlm", "label": "accepted atau fallback", "variant": "emphasis", "labelAt": [1098, 416]},
+    {"id": "vlm-specialists", "from": "branch-vlm", "to": "branch-specialists", "label": "region + tugas khusus", "labelAt": [1213, 516]},
+    {"id": "branch-vlm-output", "from": "branch-vlm", "to": "document-output", "label": "Markdown tervalidasi", "variant": "emphasis", "fromSide": "top", "toSide": "bottom", "via": [[1212.5, 380], [1287, 380]], "labelAt": [1155, 370]},
+    {"id": "branch-specialists-output", "from": "branch-specialists", "to": "document-output", "label": "data + crop", "variant": "default", "fromSide": "right", "toSide": "right", "via": [[1380, 611], [1380, 311]], "labelAt": [1342, 625]}
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Perubahan dan status",
+      "items": [
+        "Main: VLM utama membaca, menyusun, dan memvalidasi seluruh halaman",
+        "Branch: orientasi dinormalisasi sebelum Unlimited-OCR membaca halaman",
+        "VLM utama dan OCR dilayani dua port llama.cpp yang terpisah",
+        "Text-layer PDF menjadi bukti independen untuk mendeteksi hasil OCR yang tampak masuk akal tetapi salah"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Keputusan strategi yang terlihat",
+      "items": [
+        "Trust tinggi: draft OCR masuk judge; koreksi dicatat sebagai corrected_by_vlm",
+        "Trust rendah/error: VLM mengekstrak ulang dari citra, bukan mempertahankan draft OCR",
+        "Halaman kosong, retry rotasi, skor kandidat, risk flags, dan manifest tersimpan untuk audit"
+      ]
+    }
+  ]
+}

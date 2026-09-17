@@ -230,7 +230,15 @@ def extract_document(
             )
 
         if ext in {".png", ".jpg", ".jpeg", ".webp"}:
-            result = pipeline.run(str(path_obj), forced_specs=specs)
+            result = pipeline.run(
+                str(path_obj),
+                forced_specs=specs,
+                is_first_page=True,
+                page_number=1,
+                region_output_dir=(
+                    Path("output") / path_obj.stem / "regions" / "page_0001"
+                ),
+            )
             return result.get("markdown_content", "")
 
         return f"ERROR: Ekstensi file tidak didukung: {ext}"

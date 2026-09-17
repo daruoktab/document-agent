@@ -520,6 +520,10 @@ def process_presentation_vision(
                 str(img_file),
                 forced_specs=doc_spec,
                 is_first_page=(idx == 1),
+                page_number=idx,
+                region_output_dir=(
+                    target_slides_dir.parent / "regions" / f"slide_{idx:04d}"
+                ),
             )
             slide_md = res.get("markdown_content", "")
             total_visuals += int(res.get("visual_count", 0))

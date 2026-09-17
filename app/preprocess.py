@@ -109,3 +109,35 @@ def preprocess_image(
         is_modified=False,
         dimensions=dimensions,
     )
+
+
+def rotate_image_right_angle(
+    image_path: str | Path,
+    degrees_clockwise: int,
+    *,
+    output_dir: str | Path | None = None,
+) -> str:
+    """Rotasi citra 0/90/180/270 derajat searah jarum jam dan simpan sebagai PNG."""
+    if degrees_clockwise not in {0, 90, 180, 270}:
+        raise ValueError("degrees_clockwise harus salah satu dari 0, 90, 180, 270")
+    source_path = Path(image_path)
+    if degrees_clockwise == 0:
+        return str(source_path)
+
+    if output_dir:
+        target_dir = Path(output_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / "oriented_page.png"
+    else:
+        with tempfile.NamedTemporaryFile(
+            prefix=f"rot{degrees_clockwise}_{source_path.stem}_",
+            suffix=".png",
+            delete=False,
+        ) as temp_file:
+            target_path = Path(temp_file.name)
+
+    with Image.open(source_path) as image:
+        image.convert("RGB").rotate(-degrees_clockwise, expand=True).save(
+            target_path, format="PNG"
+        )
+    return str(target_path.resolve())
