@@ -94,6 +94,7 @@ def process_multipage_docx(
     auto_tabular_db: bool = True,
     force_all_tables: bool = False,
     output_markdown_path: str | Path | None = None,
+    resume: bool = False,
 ) -> ExtractedDocument:
     """
     Proses DOCX dengan jalur visual yang sama seperti PDF.
@@ -124,6 +125,7 @@ def process_multipage_docx(
             force_all_tables=force_all_tables,
             output_markdown_path=output_markdown_path,
             source_file_for_records=path_obj,
+            resume=resume,
         )
 
 

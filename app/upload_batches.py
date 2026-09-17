@@ -9,7 +9,7 @@ from uuid import uuid4
 
 
 def create_batch(output_dir: Path, name: str, documents: list[dict[str, str]]) -> dict[str, Any]:
-    requested_name = name.strip() or "Upload dokumen"
+    requested_name = name.strip() or "Uploaded files"
     used_names = {batch.get("name") for batch in list_batches(output_dir)}
     batch_name = requested_name
     ordinal = 1
@@ -19,7 +19,8 @@ def create_batch(output_dir: Path, name: str, documents: list[dict[str, str]]) -
     batch = {
         "id": uuid4().hex,
         "name": batch_name,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "uploaded_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "documents": list({doc["stem"]: doc for doc in documents}.values()),
     }
     directory = output_dir / "batches" / batch["id"]

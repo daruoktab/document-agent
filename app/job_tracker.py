@@ -102,15 +102,12 @@ class JobInfo:
     stage: str = "Memulai ekstraksi..."
     last_message: str = ""
     started_at: str = field(
-        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(
-            timespec="seconds"
-        )
+        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
     )
     updated_at: str = field(
-        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(
-            timespec="seconds"
-        )
+        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
     )
+    completed_at: str | None = None
     pid: int | None = None
     returncode: int | None = None
     error_message: str | None = None
@@ -151,6 +148,7 @@ class JobInfo:
             "last_message": self.last_message,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
+            "completed_at": self.completed_at,
             "pid": self.pid,
             "returncode": self.returncode,
             "error_message": self.error_message,
@@ -162,9 +160,7 @@ class JobInfo:
         """Simpan status JSON dan ringkasan TXT ke disk secara atomic/aman."""
         try:
             self.status_file.parent.mkdir(parents=True, exist_ok=True)
-            self.updated_at = dt.datetime.now(dt.UTC).isoformat(
-                timespec="seconds"
-            )
+            self.updated_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
             # 1. Simpan JSON terstruktur
             self.status_file.write_text(
@@ -228,6 +224,7 @@ class JobManager:
         preview_chunks: bool = False,
         chunk_size: int = 1000,
         chunk_overlap: int = 150,
+        resume: bool = False,
     ) -> JobInfo:
         """Antrekan ekstraksi baru jika dokumen yang sama belum diproses."""
         with self._lock:
@@ -248,9 +245,11 @@ class JobManager:
             status_file = log_dir / f"{stem}_status.json"
             progress_file = log_dir / f"{stem}_progress.txt"
             out_file = doc_output_dir / f"{stem}.md"
+            checkpoint_file = log_dir / f"{stem}_checkpoint.json"
             db_dir = doc_output_dir / "databases"
             db_dir.mkdir(parents=True, exist_ok=True)
             db_file = db_dir / f"{stem}.sqlite"
+            effective_resume = resume or checkpoint_file.exists()
 
             # Tulis header awal ke file log agar langsung tersedia
             start_iso = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
@@ -287,46 +286,75 @@ class JobManager:
                     "preview_chunks": preview_chunks,
                     "chunk_size": chunk_size,
                     "chunk_overlap": chunk_overlap,
+                    "resume": effective_resume,
                 },
             )
             job.save_status()
             self._jobs[stem] = job
 
-            # Susun perintah CLI
-            cmd = [
-                get_python_executable(),
-                str(PROJECT_ROOT / "main.py"),
-                str(input_path),
-                "-o",
-                str(out_file),
-                "--dpi",
-                str(dpi),
-                "--log-file",
-                str(log_path),
-            ]
-            if doc_type:
-                cmd.extend(["-t", doc_type])
-            if force_all_tables:
-                cmd.append("--force-all-tables")
-            if preview_chunks:
-                cmd.extend([
+            self._launch_job(job, resume=effective_resume)
+            return job
+
+    @staticmethod
+    def _checkpoint_path(job: JobInfo) -> Path:
+        return job.out_file.parent / "logs" / f"{job.out_file.stem}_checkpoint.json"
+
+    def _launch_job(self, job: JobInfo, *, resume: bool = False) -> None:
+        """Jalankan worker untuk job baru atau job yang dipulihkan dari checkpoint."""
+        cmd = [
+            get_python_executable(),
+            str(PROJECT_ROOT / "main.py"),
+            str(job.input_path),
+            "-o",
+            str(job.out_file),
+            "--dpi",
+            str(job.extraction_options.get("dpi", 200)),
+            "--log-file",
+            str(job.log_path),
+        ]
+        doc_type = job.extraction_options.get("doc_type")
+        if doc_type:
+            cmd.extend(["-t", str(doc_type)])
+        if job.extraction_options.get("force_all_tables"):
+            cmd.append("--force-all-tables")
+        if job.extraction_options.get("preview_chunks"):
+            cmd.extend(
+                [
                     "--preview-chunks",
                     "--chunk-size",
-                    str(chunk_size),
+                    str(job.extraction_options.get("chunk_size", 1000)),
                     "--chunk-overlap",
-                    str(chunk_overlap),
-                ])
-
-            # Jalankan worker di background thread terpisah
-            worker = threading.Thread(
-                target=self._run_worker,
-                args=(job, cmd),
-                daemon=True,
-                name=f"Worker-{stem}",
+                    str(job.extraction_options.get("chunk_overlap", 150)),
+                ]
             )
-            self._threads[stem] = worker
-            worker.start()
-            return job
+        if resume:
+            cmd.append("--resume")
+
+        worker = threading.Thread(
+            target=self._run_worker,
+            args=(job, cmd),
+            daemon=True,
+            name=f"Worker-{job.job_id}",
+        )
+        self._threads[job.job_id] = worker
+        worker.start()
+
+    def resume_pending_jobs(self, output_dir: Path) -> int:
+        """Mulai ulang job terhenti yang memiliki checkpoint halaman."""
+        resumed = 0
+        for document in self.list_all_documents(output_dir):
+            if document["status"] != "queued":
+                continue
+            job = self.get_job(document["stem"], output_dir=output_dir)
+            if job is None or not self._checkpoint_path(job).exists():
+                continue
+            with self._lock:
+                worker = self._threads.get(job.job_id)
+                if worker is not None and worker.is_alive():
+                    continue
+                self._launch_job(job, resume=True)
+            resumed += 1
+        return resumed
 
     @staticmethod
     def _slot_paths(output_dir: Path) -> list[Path]:
@@ -514,6 +542,9 @@ class JobManager:
                     )
                     job.last_message = job.error_message
 
+                if job.status in {"completed", "failed", "canceled"}:
+                    job.completed_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+
                 job.save_status()
 
         except Exception as exc:
@@ -568,22 +599,16 @@ class JobManager:
         if m_page:
             job.current_page = int(m_page.group(1))
             job.total_pages = int(m_page.group(2))
-            job.stage = (
-                f"Ekstraksi VLM Halaman {job.current_page} / {job.total_pages}"
-            )
+            job.stage = f"Ekstraksi VLM Halaman {job.current_page} / {job.total_pages}"
             job.last_message = line
             updated = True
 
         # 2. Pola Slide PPT: "[Vision PPT] [Slide 2/8] Memproses slide..."
-        m_slide = re.search(
-            r"\[Slide\s+(\d+)\s*/\s*(\d+)\]", line, re.IGNORECASE
-        )
+        m_slide = re.search(r"\[Slide\s+(\d+)\s*/\s*(\d+)\]", line, re.IGNORECASE)
         if m_slide:
             job.current_page = int(m_slide.group(1))
             job.total_pages = int(m_slide.group(2))
-            job.stage = (
-                f"Ekstraksi VLM Slide {job.current_page} / {job.total_pages}"
-            )
+            job.stage = f"Ekstraksi VLM Slide {job.current_page} / {job.total_pages}"
             job.last_message = line
             updated = True
 
@@ -593,9 +618,7 @@ class JobManager:
         )
         if m_slides_total:
             job.total_pages = int(m_slides_total.group(1))
-            job.stage = (
-                f"Rendering selesai ({job.total_pages} slide), memulai VLM..."
-            )
+            job.stage = f"Rendering selesai ({job.total_pages} slide), memulai VLM..."
             job.last_message = line
             updated = True
 
@@ -630,9 +653,7 @@ class JobManager:
         if updated:
             job.save_status()
 
-    def get_job(
-        self, stem: str, output_dir: Path | None = None
-    ) -> JobInfo | None:
+    def get_job(self, stem: str, output_dir: Path | None = None) -> JobInfo | None:
         """Ambil info job dari memori atau rekonstruksi dari status.json di disk."""
         with self._lock:
             # 1. Cek dari memori
@@ -655,7 +676,15 @@ class JobManager:
                     # Worker thread may still be starting the subprocess.
                     # Do not mark a job failed before it receives a PID.
                     elif job.pid is not None and not is_pid_alive(job.pid):
-                        self._recover_terminated_job(job)
+                        if self._checkpoint_path(job).exists():
+                            job.status = "queued"
+                            job.pid = None
+                            job.returncode = None
+                            job.stage = "Checkpoint ditemukan, menyiapkan resume..."
+                            job.last_message = "Layanan sebelumnya berhenti; ekstraksi akan dilanjutkan."
+                            job.save_status()
+                        else:
+                            self._recover_terminated_job(job)
                 return job
 
         # 2. Jika tidak ada di memori (misal server streamlit sempat restart), coba load dari disk
@@ -684,12 +713,8 @@ class JobManager:
                     file_name=data.get("file_name", f"{stem}"),
                     input_path=Path(data.get("input_path", "")),
                     output_dir=Path(data.get("output_dir", target_dir)),
-                    out_file=Path(
-                        data.get("out_file", target_dir / f"{stem}.md")
-                    ),
-                    db_file=Path(data["db_file"])
-                    if data.get("db_file")
-                    else None,
+                    out_file=Path(data.get("out_file", target_dir / f"{stem}.md")),
+                    db_file=Path(data["db_file"]) if data.get("db_file") else None,
                     log_path=Path(data.get("log_path", latest_log)),
                     latest_log_path=latest_log,
                     status_file=status_file,
@@ -708,20 +733,42 @@ class JobManager:
                     updated_at=data.get("updated_at", ""),
                     pid=data.get("pid"),
                     returncode=data.get("returncode"),
-                    error_message=data.get("error_message"),
+                error_message=data.get("error_message"),
+                    completed_at=data.get("completed_at"),
                     run_id=data.get("run_id", uuid.uuid4().hex),
                     extraction_options=data.get("extraction_options", {}),
                     recent_logs=recent,
                 )
 
-                # Job antrean tidak memiliki worker setelah server Streamlit dimuat ulang.
-                if job.status == "queued":
+                checkpoint_exists = self._checkpoint_path(job).exists()
+                # Job antrean atau gagal dengan checkpoint dapat dilanjutkan setelah restart.
+                if job.status in {"queued", "failed"} and checkpoint_exists:
+                    job.status = "queued"
+                    job.pid = None
+                    job.returncode = None
+                    job.stage = "Checkpoint ditemukan, menyiapkan resume..."
+                    job.last_message = (
+                        "Layanan sebelumnya berhenti; ekstraksi akan dilanjutkan."
+                    )
+                    job.save_status()
+                # Job antrean tanpa checkpoint memang belum memiliki worker lagi.
+                elif job.status == "queued":
                     self._recover_abandoned_queue(job)
                 # Validasi jika status tersimpan "running" tapi PID sudah mati.
                 elif job.status == "running" and (
                     job.pid is None or not is_pid_alive(job.pid)
                 ):
-                    self._recover_terminated_job(job)
+                    if checkpoint_exists:
+                        job.status = "queued"
+                        job.pid = None
+                        job.returncode = None
+                        job.stage = "Checkpoint ditemukan, menyiapkan resume..."
+                        job.last_message = (
+                            "Layanan sebelumnya berhenti; ekstraksi akan dilanjutkan."
+                        )
+                        job.save_status()
+                    else:
+                        self._recover_terminated_job(job)
 
                 with self._lock:
                     self._jobs[stem] = job
@@ -797,14 +844,28 @@ class JobManager:
         job = self.get_job(stem, output_dir=output_dir)
         if job and job.status == "running":
             return job
+        if job and job.status == "queued" and self._checkpoint_path(job).exists():
+            with self._lock:
+                worker = self._threads.get(job.job_id)
+                if worker is None or not worker.is_alive():
+                    self._launch_job(job, resume=True)
+            return job
         source = job.input_path if job else None
         if source is None or not source.is_file():
             uploads = output_dir / "uploads"
-            matches = [p for p in uploads.iterdir() if p.is_file() and p.stem == stem] if uploads.exists() else []
+            matches = (
+                [p for p in uploads.iterdir() if p.is_file() and p.stem == stem]
+                if uploads.exists()
+                else []
+            )
             if len(matches) != 1:
-                raise FileNotFoundError(f"Sumber dokumen '{stem}' tidak tersedia atau ambigu. Unggah ulang file sumber.")
+                raise FileNotFoundError(
+                    f"Sumber dokumen '{stem}' tidak tersedia atau ambigu. Unggah ulang file sumber."
+                )
             source = matches[0]
-        return self.start_job(source, output_dir, **(job.extraction_options if job else {}))
+        return self.start_job(
+            source, output_dir, **(job.extraction_options if job else {})
+        )
 
     def reset_job(self, stem: str, output_dir: Path | None = None) -> None:
         """Hapus referensi job dari memori dan bersihkan file status agar dapat diekstrak ulang."""
@@ -838,18 +899,29 @@ class JobManager:
                 if job.output_dir.resolve() != output_dir.resolve():
                     continue
                 seen_stems.add(stem)
-                docs.append({
-                    "stem": stem,
-                    "status": job.status,
-                    "stage": job.stage,
-                    "page_count": job.total_pages or job.current_page or 0,
-                    "mtime": job.status_file.stat().st_mtime if job.status_file.exists() else 0.0,
-                })
+                docs.append(
+                    {
+                        "stem": stem,
+                        "status": job.status,
+                        "stage": job.stage,
+                        "page_count": job.total_pages or job.current_page or 0,
+                        "mtime": job.status_file.stat().st_mtime
+                        if job.status_file.exists()
+                        else 0.0,
+                    }
+                )
 
         # 2. Dari direktori output di disk
         if output_dir.exists():
             for item in output_dir.iterdir():
-                if not item.is_dir() or item.name in ("logs", "databases", "csv", "uploads", "cache", "batches"):
+                if not item.is_dir() or item.name in (
+                    "logs",
+                    "databases",
+                    "csv",
+                    "uploads",
+                    "cache",
+                    "batches",
+                ):
                     continue
                 stem = item.name
                 if stem in seen_stems:
@@ -858,7 +930,11 @@ class JobManager:
                 md_file = item / f"{stem}.md"
                 db_file = item / "databases" / f"{stem}.sqlite"
                 status_file = item / "logs" / f"{stem}_status.json"
-                if not md_file.exists() and not db_file.exists() and not status_file.exists():
+                if (
+                    not md_file.exists()
+                    and not db_file.exists()
+                    and not status_file.exists()
+                ):
                     continue
 
                 seen_stems.add(stem)
@@ -866,24 +942,37 @@ class JobManager:
                 pages_dir = item / "pages"
                 slides_dir = item / "slides"
                 if pages_dir.exists():
-                    page_count = len(list(pages_dir.glob("*.png")) + list(pages_dir.glob("*.jpg")))
+                    page_count = len(
+                        list(pages_dir.glob("*.png")) + list(pages_dir.glob("*.jpg"))
+                    )
                 elif slides_dir.exists():
-                    page_count = len(list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg")))
+                    page_count = len(
+                        list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg"))
+                    )
 
-                mtime = max(path.stat().st_mtime for path in (item, md_file, status_file) if path.exists())
+                mtime = max(
+                    path.stat().st_mtime
+                    for path in (item, md_file, status_file)
+                    if path.exists()
+                )
                 job = self.get_job(stem, output_dir=output_dir)
                 status = job.status if job else "completed"
                 stage = job.stage if job else "Selesai"
 
-                docs.append({
-                    "stem": stem,
-                    "status": status,
-                    "stage": stage,
-                    "page_count": page_count,
-                    "mtime": mtime,
-                })
+                docs.append(
+                    {
+                        "stem": stem,
+                        "status": status,
+                        "stage": stage,
+                        "page_count": page_count,
+                        "mtime": mtime,
+                    }
+                )
 
-        docs.sort(key=lambda d: (d["status"] in {"queued", "running"}, d["mtime"]), reverse=True)
+        docs.sort(
+            key=lambda d: (d["status"] in {"queued", "running"}, d["mtime"]),
+            reverse=True,
+        )
         return docs
 
     def get_active_job_counts(self, output_dir: Path) -> dict[str, int]:

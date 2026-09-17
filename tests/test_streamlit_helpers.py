@@ -14,6 +14,7 @@ from app.streamlit_logic import (
     build_document_zip,
     extract_mermaid_blocks,
     find_pages_containing,
+    format_timestamp,
     get_document_images,
     read_completed_markdown_pages,
     split_markdown_by_pages,
@@ -28,6 +29,10 @@ class TestStreamlitHelpers(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_format_timestamp_handles_iso_and_missing_values(self) -> None:
+        self.assertEqual(format_timestamp(None), "—")
+        self.assertIn("17 Sep 2026", format_timestamp("2026-09-17T07:32:08+00:00"))
 
     def test_split_markdown_by_pages_pdf_format(self) -> None:
         raw_md = (

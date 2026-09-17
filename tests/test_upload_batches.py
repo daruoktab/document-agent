@@ -41,6 +41,12 @@ class TestUploadBatches(unittest.TestCase):
             self.assertEqual(first["name"], "Folder")
             self.assertEqual(second["name"], "Folder (1)")
 
+    def test_empty_batch_name_defaults_to_uploaded_files_and_records_upload_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            batch = create_batch(Path(directory), "", [{"stem": "one", "source_name": "one.pdf"}])
+            self.assertEqual(batch["name"], "Uploaded files")
+            self.assertEqual(batch["uploaded_at"], batch["created_at"])
+
     def test_nested_uploads_deduplicate_and_batch_survives_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
