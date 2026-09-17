@@ -84,7 +84,7 @@ def batch_status(jobs: Sequence[Any]) -> str:
     statuses = [job.status for job in jobs if job is not None]
     if not statuses:
         return "Belum dimulai"
-    if any(status in {"queued", "running"} for status in statuses):
+    if any(status in {"queued", "running", "paused"} for status in statuses):
         return "Diproses"
     if any(status in {"failed", "canceled"} for status in statuses):
         return "Perlu diperiksa"
@@ -97,6 +97,7 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
     manager = JobManager.get_instance()
     batch_rows: list[dict[str, Any]] = []
     active_jobs: list[Any] = []
+    job_batch_names: dict[str, str] = {}
     total_files = completed_files = failed_files = 0
 
     for batch in batches:
@@ -105,7 +106,9 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
             for doc in batch.get("documents", [])
         ]
         valid_jobs = [job for job in jobs if job is not None]
-        active = [job for job in valid_jobs if job.status in {"queued", "running"}]
+        active = [
+            job for job in valid_jobs if job.status in {"queued", "running", "paused"}
+        ]
         current = next(
             (job for job in active if job.status == "running"),
             active[0] if active else None,
@@ -114,6 +117,8 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
         completed_files += sum(job.status == "completed" for job in valid_jobs)
         failed_files += sum(job.status in {"failed", "canceled"} for job in valid_jobs)
         active_jobs.extend(active)
+        for job in valid_jobs:
+            job_batch_names[job.job_id] = batch.get("name", "Uploaded files")
 
         if current:
             current_file = current.file_name
@@ -155,6 +160,56 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
     metrics[2].metric("File selesai", completed_files)
     metrics[3].metric("Sedang diproses", sum(job.status == "running" for job in active_jobs))
     metrics[4].metric("Gagal / dibatalkan", failed_files)
+
+    running_jobs = [job for job in active_jobs if job.status == "running"]
+    paused_jobs = [job for job in active_jobs if job.status == "paused"]
+    queued_jobs = [job for job in active_jobs if job.status == "queued"]
+    control_cols = st.columns([1.5, 1.5, 2.5])
+    with control_cols[0]:
+        if st.button(
+            f"⏸️ Pause semua yang berjalan ({len(running_jobs)})",
+            disabled=not running_jobs,
+            use_container_width=True,
+            help="Jeda semua proses ingest yang sedang memakai slot. Slot langsung tersedia untuk file prioritas.",
+            key="dashboard_pause_all",
+        ):
+            paused_count = sum(manager.pause_job(job.job_id) for job in running_jobs)
+            st.success(f"{paused_count} ingest dijeda. Silakan pilih file prioritas di bawah.")
+            st.rerun()
+    with control_cols[1]:
+        if st.button(
+            f"▶️ Lanjutkan semua yang dijeda ({len(paused_jobs)})",
+            disabled=not paused_jobs,
+            use_container_width=True,
+            key="dashboard_resume_all",
+        ):
+            resumed_count = sum(
+                manager.resume_job(job.job_id, output_dir) for job in paused_jobs
+            )
+            st.success(f"{resumed_count} ingest dikembalikan ke antrean.")
+            st.rerun()
+    with control_cols[2]:
+        if queued_jobs:
+            queue_choices = {
+                f"{job.file_name} · {job_batch_names.get(job.job_id, 'Batch')} · {job.job_id}": job
+                for job in queued_jobs
+            }
+            selected_queue_label = st.selectbox(
+                "Pilih file antrean untuk diproses berikutnya",
+                list(queue_choices),
+                key="dashboard_priority_file",
+            )
+            if st.button(
+                "⭐ Jadikan prioritas sekarang",
+                use_container_width=True,
+                key="dashboard_prioritize_file",
+            ):
+                selected_job = queue_choices[selected_queue_label]
+                if manager.prioritize_job(selected_job.job_id, output_dir=output_dir):
+                    st.success(f"{selected_job.file_name} diprioritaskan.")
+                    st.rerun()
+        else:
+            st.caption("Tidak ada file lain yang menunggu antrean.")
 
     active_rows = [row for row in batch_rows if row["Status"] == "Diproses"]
     history_rows = [row for row in batch_rows if row["Status"] != "Diproses"]
@@ -228,13 +283,32 @@ def _save_uploaded_file(uploaded_file: UploadedFileLike, output_dir: Path) -> Pa
     stem = Path(name).stem
 
     # Rerun Streamlit tidak membuat salinan baru untuk upload yang sama persis.
-    for existing in uploads_dir.glob(f"*{suffix}"):
+    for existing in uploads_dir.iterdir():
+        if existing.suffix.lower() != suffix:
+            continue
         if existing.is_file() and existing.read_bytes() == content:
             return existing
 
+    def stem_is_used(candidate_stem: str) -> bool:
+        # Cegah collision lintas ekstensi: laporan.pdf dan laporan.docx
+        # tidak boleh memakai job/output directory yang sama.
+        if any(
+            path.is_file() and path.stem == candidate_stem
+            for path in uploads_dir.iterdir()
+        ):
+            return True
+        for path in output_dir.iterdir():
+            if path.name in {"uploads", "batches", "logs", "databases", "cache", "csv"}:
+                continue
+            if path.name == candidate_stem:
+                return True
+            if path.is_file() and path.stem == candidate_stem:
+                return True
+        return False
+
     candidate = uploads_dir / f"{stem}{suffix}"
     ordinal = 1
-    while candidate.exists():
+    while candidate.exists() or stem_is_used(candidate.stem):
         candidate = uploads_dir / f"{stem} ({ordinal}){suffix}"
         ordinal += 1
     candidate.write_bytes(content)
@@ -458,7 +532,7 @@ def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
         manager.get_job(doc["stem"], output_dir=output_dir)
         for doc in batch["documents"]
     ]
-    busy = any(job and job.status in {"queued", "running"} for job in jobs)
+    busy = any(job and job.status in {"queued", "running", "paused"} for job in jobs)
     completed = sum(bool(job and job.status == "completed") for job in jobs)
     status = batch_status(jobs)
     st.caption(
@@ -655,6 +729,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
     labels = {
         "queued": "Menunggu antrean",
         "running": "Sedang diproses",
+        "paused": "Dijeda",
         "completed": "Selesai",
         "failed": "Gagal",
         "canceled": "Dibatalkan",
@@ -690,7 +765,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
             )
     if rows:
         with st.container(height=420, border=True):
-            header = st.columns([2.4, 1, 1, 2.2, 1.4, 1.8, 1.8, 0.8])
+            header = st.columns([2.2, 1.2, 0.8, 1.8, 1.2, 1.4, 1.4, 1.4])
             headers = [
                 "File",
                 "Status",
@@ -706,7 +781,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
             for index, (stem, row) in enumerate(
                 zip(dict.fromkeys(stems), rows, strict=True)
             ):
-                columns = st.columns([2.4, 1, 1, 2.2, 1.4, 1.8, 1.8, 0.8])
+                columns = st.columns([2.2, 1.2, 0.8, 1.8, 1.2, 1.4, 1.4, 1.4])
                 values = [
                     row["File"],
                     row["Status"],
@@ -718,9 +793,51 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
                 ]
                 for column, value in zip(columns[:-1], values, strict=True):
                     column.write(value)
-                if columns[-1].button("Buka", key=f"batch_open_{index}"):
-                    st.session_state["selected_stem"] = stem
-                    st.rerun()
+
+                action_col = columns[-1]
+                job_item = jobs[index]
+                if job_item and job_item.status in {"running", "paused", "queued"}:
+                    b_open, b_act = action_col.columns([1, 1])
+                    if b_open.button("Buka", key=f"batch_open_{index}", use_container_width=True):
+                        st.session_state["selected_stem"] = stem
+                        st.rerun()
+                    act_triggered = False
+                    if job_item.status == "running":
+                        act_triggered = bool(
+                            b_act.button(
+                                "⏸️",
+                                key=f"batch_pause_{index}",
+                                help="Jeda ekstraksi dokumen ini",
+                                use_container_width=True,
+                            )
+                            and job_manager.pause_job(stem)
+                        )
+                    elif job_item.status == "paused":
+                        act_triggered = bool(
+                            b_act.button(
+                                "▶️",
+                                key=f"batch_resume_{index}",
+                                help="Lanjutkan ekstraksi dokumen ini",
+                                use_container_width=True,
+                            )
+                            and job_manager.resume_job(stem, output_path)
+                        )
+                    elif job_item.status == "queued":
+                        act_triggered = bool(
+                            b_act.button(
+                                "⭐",
+                                key=f"batch_pri_{index}",
+                                help="Prioritaskan dokumen ini ke urutan antrean terdepan",
+                                use_container_width=True,
+                            )
+                            and job_manager.prioritize_job(stem, output_dir=output_path)
+                        )
+                    if act_triggered:
+                        st.rerun()
+                else:
+                    if action_col.button("Buka", key=f"batch_open_{index}", use_container_width=True):
+                        st.session_state["selected_stem"] = stem
+                        st.rerun()
     st.markdown(
         '<div style="color:#cbd5e1 !important; opacity:1; font-size:0.85rem;">'
         "Setiap file memiliki hasil Markdown sendiri. Pilih Buka untuk melihat hasil, "
@@ -747,7 +864,8 @@ def render_active_ingest_status(output_path: Path) -> None:
     if active_counts["active"]:
         status_text = (
             f"🔄 {active_counts['active']} ingest aktif · "
-            f"{active_counts['running']} berjalan · {active_counts['queued']} antrean"
+            f"{active_counts['running']} berjalan · {active_counts['queued']} antrean · "
+            f"{active_counts.get('paused', 0)} dijeda"
         )
     else:
         status_text = "✅ Tidak ada ingest aktif"
@@ -768,7 +886,7 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
         return
 
     # Jika job telah selesai atau gagal, minta Streamlit rerun halaman penuh
-    if job.status not in {"queued", "running"}:
+    if job.status not in {"queued", "running", "paused"}:
         st.rerun()
 
     # Progress bar & badge
@@ -792,9 +910,13 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
     c4.metric(
         "🩺 Kondisi",
         (
+            "⏸️ Dijeda"
+            if job.status == "paused"
+            else (
             "🟡 Menunggu antrean"
             if job.status == "queued"
             else ("Berjalan" if is_alive else "Perlu diperiksa")
+            )
         ),
     )
 
@@ -806,35 +928,47 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
         f"📌 Aktivitas terakhir: {job.last_message or 'Sedang menyiapkan proses...'}"
     )
 
-    completed_pages = read_completed_markdown_pages(job.out_file)
-    if completed_pages:
-        st.markdown("#### 👀 Preview halaman yang sudah selesai")
-        st.caption(
-            "Preview ini diperbarui otomatis. Isi akhir dapat berubah setelah pemeriksaan "
-            "dan penyatuan seluruh dokumen selesai."
-        )
-        available_pages = sorted(completed_pages)
-        selected_page = st.selectbox(
-            "Pilih halaman / slide yang sudah selesai",
-            available_pages,
-            index=len(available_pages) - 1,
-            format_func=lambda page_number: f"Halaman / Slide {page_number}",
-            key=f"live_preview_page_{stem}",
-        )
-        images = get_document_images(stem, output_path)
-        preview_text = completed_pages[selected_page]
-        if 0 < selected_page <= len(images):
-            image_col, text_col = st.columns([1.1, 1], gap="medium")
-            with image_col:
-                st.image(
-                    str(images[selected_page - 1]),
-                    caption=f"Dokumen asli · halaman / slide {selected_page}",
-                    use_container_width=True,
-                )
-            with text_col:
-                st.markdown(preview_text)
-        else:
-            st.markdown(preview_text)
+    # Aksi kontrol cepat di bagian atas monitor
+    col_a1, col_a2, col_a3 = st.columns([1, 1.2, 1])
+    with col_a1:
+        if st.button("🔄 Segarkan Tampilan", key=f"top_refresh_{stem}", use_container_width=True):
+            st.rerun()
+    with col_a2:
+        if job.status == "paused":
+            if st.button(
+                "▶️ Lanjutkan Ekstraksi",
+                type="primary",
+                key=f"top_resume_{stem}",
+                use_container_width=True,
+            ) and job_manager.resume_job(stem, output_path):
+                st.rerun()
+        elif job.status == "queued":
+            if st.button(
+                "⭐ Prioritaskan Antrean",
+                type="primary",
+                key=f"top_pri_{stem}",
+                use_container_width=True,
+                help="Majukan file ini ke urutan antrean terdepan",
+            ) and job_manager.prioritize_job(stem, output_dir=output_path):
+                st.success("File ini diprioritaskan untuk mengambil slot eksekusi berikutnya.")
+                st.rerun()
+        elif st.button(
+            "⏸️ Pause Ekstraksi",
+            type="secondary",
+            key=f"top_pause_{stem}",
+            use_container_width=True,
+        ) and job_manager.pause_job(stem):
+            st.info("Ekstraksi dijeda.")
+            st.rerun()
+    with col_a3:
+        if st.button(
+            "🛑 Batalkan Ekstraksi",
+            type="secondary",
+            key=f"top_cancel_{stem}",
+            use_container_width=True,
+        ) and job_manager.cancel_job(stem):
+            st.warning("Proses ekstraksi telah dibatalkan.")
+            st.rerun()
 
     completed_pages = read_completed_markdown_pages(job.out_file)
     if completed_pages:
@@ -871,20 +1005,6 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
         st.caption(f"Lokasi log: `{log_file_str}` · ID proses: `{job.pid or '-'}`")
         recent_log_text = job_manager.get_latest_logs(stem, line_count=35)
         st.code(recent_log_text or "(Belum ada catatan proses)", language="text")
-
-    # Aksi kontrol
-    col_a1, col_a2 = st.columns([1, 1])
-    with col_a1:
-        if st.button("🔄 Segarkan Tampilan Sekarang", use_container_width=True):
-            st.rerun()
-    with col_a2:
-        if st.button(
-            "🛑 Batalkan Ekstraksi",
-            type="secondary",
-            use_container_width=True,
-        ) and job_manager.cancel_job(stem):
-            st.warning("Proses ekstraksi telah dibatalkan.")
-            st.rerun()
 
 
 # ==============================================================================
@@ -1421,6 +1541,7 @@ def main() -> None:
         status_labels = {
             "queued": "Menunggu",
             "running": "Diproses",
+            "paused": "Dijeda",
             "completed": "Selesai",
             "failed": "Gagal",
             "canceled": "Dibatalkan",
@@ -1521,7 +1642,7 @@ def main() -> None:
         # MODE 1: UNGGAH DOKUMEN BARU
         st.subheader("📤 Unggah Dokumen Baru")
         st.caption(
-            "1. Pilih file · 2. Sesuaikan pengaturan bila perlu · 3. Mulai ekstraksi. "
+            "1. Pilih file atau folder · 2. Tentukan file prioritas utama (jika >1 file) · 3. Mulai ekstraksi. "
             "Mendukung PDF, DOCX/DOC, Excel, PPTX/PPT, PNG, JPG, dan WebP."
         )
 
@@ -1551,13 +1672,38 @@ def main() -> None:
 
         if uploaded_files:
             saved_files = _save_uploaded_files(uploaded_files, output_dir)
-            st.markdown(f"**{len(saved_files)} file unik siap diproses**")
-            batch_name = st.text_input("Nama kelompok hasil", value="Uploaded files")
+            st.markdown(f"#### 📋 {len(saved_files)} File Siap Diproses")
+            if len(saved_files) > 1:
+                with st.container(border=True):
+                    st.markdown("##### ⭐ Prioritas Pemrosesan File")
+                    st.caption(
+                        "File yang Anda pilih sebagai prioritas akan diproses pertama kali "
+                        "pada slot ekstraksi VLM, mendahului file lainnya dalam antrean."
+                    )
+                    priority_options = {path.name: path for path in saved_files}
+                    priority_name = st.selectbox(
+                        "Pilih file yang diproses lebih dulu:",
+                        list(priority_options),
+                        key="upload_priority_selector",
+                        help="File ini ditempatkan di urutan #1 (prioritas tertinggi).",
+                    )
+                    priority_path = priority_options[priority_name]
+                    ordered_files = [
+                        priority_path,
+                        *[path for path in saved_files if path != priority_path],
+                    ]
+            else:
+                priority_path = saved_files[0]
+                ordered_files = saved_files
+
+            batch_name = st.text_input("Nama kelompok hasil (batch)", value="Uploaded files")
             uploaded_rows = []
-            for path in saved_files:
+            for path in ordered_files:
                 existing_job = job_manager.get_job(path.stem, output_dir=output_dir)
+                is_pri = (path == priority_path)
                 uploaded_rows.append(
                     {
+                        "Prioritas": "⭐ Utama (#1)" if is_pri else f"Antrean #{ordered_files.index(path) + 1}",
                         "File": path.name,
                         "Ukuran": f"{path.stat().st_size / 1024:.1f} KB",
                         "Status": existing_job.status if existing_job else "siap",
@@ -1574,20 +1720,21 @@ def main() -> None:
                 type="primary",
                 use_container_width=True,
             ):
-                documents = []
-                for uploaded in uploaded_files:
-                    path = _save_uploaded_file(uploaded, output_dir)
-                    documents.append({"stem": path.stem, "source_name": uploaded.name})
+                documents = [
+                    {"stem": path.stem, "source_name": path.name}
+                    for path in ordered_files
+                ]
                 batch = create_batch(output_dir, batch_name, documents)
                 st.session_state["selected_batch_id"] = batch["id"]
                 started_jobs = []
-                for saved_file in saved_files:
+                for queue_position, saved_file in enumerate(ordered_files):
                     job = job_manager.start_job(
                         input_path=saved_file,
                         output_dir=output_dir,
                         doc_type=chosen_spec,
                         dpi=dpi_val,
                         force_all_tables=force_all_tbl,
+                        queue_position=queue_position,
                     )
                     started_jobs.append(job)
 
@@ -1603,7 +1750,7 @@ def main() -> None:
         # MODE 2: DOKUMEN AKTIF DIPILIH
         job = job_manager.get_job(active_stem, output_dir=output_dir)
 
-        if job is not None and job.status in {"queued", "running"}:
+        if job is not None and job.status in {"queued", "running", "paused"}:
             render_live_monitor(active_stem, output_dir)
 
         elif job is not None and job.status == "completed":

@@ -11,6 +11,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from app.streamlit_logic import (
+    _save_uploaded_file,
     build_document_zip,
     extract_mermaid_blocks,
     find_pages_containing,
@@ -19,6 +20,15 @@ from app.streamlit_logic import (
     read_completed_markdown_pages,
     split_markdown_by_pages,
 )
+
+
+class _UploadedFile:
+    def __init__(self, name: str, content: bytes) -> None:
+        self.name = name
+        self._content = content
+
+    def getvalue(self) -> bytes:
+        return self._content
 
 
 class TestStreamlitHelpers(unittest.TestCase):
@@ -137,6 +147,18 @@ class TestStreamlitHelpers(unittest.TestCase):
                     "csv/tabel.csv",
                 },
             )
+
+    def test_upload_same_stem_different_extension_gets_unique_stem(self) -> None:
+        first = _save_uploaded_file(
+            _UploadedFile("laporan.pdf", b"pdf"), self.temp_dir
+        )
+        second = _save_uploaded_file(
+            _UploadedFile("laporan.docx", b"docx"), self.temp_dir
+        )
+
+        self.assertEqual(first.name, "laporan.pdf")
+        self.assertEqual(second.name, "laporan (1).docx")
+        self.assertNotEqual(first.stem, second.stem)
 
 
 if __name__ == "__main__":

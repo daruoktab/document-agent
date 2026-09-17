@@ -332,6 +332,46 @@ class TestJobTracker(unittest.TestCase):
         self.assertEqual(job.status, "failed")
         self.assertIn("jalankan ulang", job.error_message or "")
 
+    def test_prioritize_job(self) -> None:
+        manager = JobManager.get_instance()
+        job1 = JobInfo(
+            job_id="prio_job1",
+            file_name="prio_job1.pdf",
+            input_path=self.temp_dir / "prio_job1.pdf",
+            output_dir=self.temp_dir,
+            out_file=self.temp_dir / "prio_job1.md",
+            db_file=None,
+            log_path=self.log_dir / "prio_job1.log",
+            latest_log_path=self.log_dir / "prio_job1_latest.log",
+            status_file=self.log_dir / "prio_job1_status.json",
+            progress_file=self.log_dir / "prio_job1_progress.txt",
+            status="queued",
+            queue_position=5,
+        )
+        job2 = JobInfo(
+            job_id="prio_job2",
+            file_name="prio_job2.pdf",
+            input_path=self.temp_dir / "prio_job2.pdf",
+            output_dir=self.temp_dir,
+            out_file=self.temp_dir / "prio_job2.md",
+            db_file=None,
+            log_path=self.log_dir / "prio_job2.log",
+            latest_log_path=self.log_dir / "prio_job2_latest.log",
+            status_file=self.log_dir / "prio_job2_status.json",
+            progress_file=self.log_dir / "prio_job2_progress.txt",
+            status="queued",
+            queue_position=2,
+        )
+        with manager._lock:
+            manager._jobs["prio_job1"] = job1
+            manager._jobs["prio_job2"] = job2
+
+        # Prioritize job1 (sebelumnya posisi 5, sedangkan job2 posisi 2)
+        success = manager.prioritize_job("prio_job1", output_dir=self.temp_dir)
+        self.assertTrue(success)
+        self.assertLess(job1.queue_position, job2.queue_position)
+        self.assertIn("Diprioritaskan", job1.stage)
+
 
 if __name__ == "__main__":
     unittest.main()

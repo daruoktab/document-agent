@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -96,7 +97,8 @@ class JobInfo:
     latest_log_path: Path
     status_file: Path
     progress_file: Path
-    status: str = "queued"  # "queued" | "running" | "completed" | "failed" | "canceled"
+    status: str = "queued"  # "queued" | "running" | "paused" | "completed" | "failed" | "canceled"
+    queue_position: int = 0
     current_page: int = 0
     total_pages: int = 0
     stage: str = "Memulai ekstraksi..."
@@ -141,6 +143,7 @@ class JobInfo:
             "status_file": str(self.status_file),
             "progress_file": str(self.progress_file),
             "status": self.status,
+            "queue_position": self.queue_position,
             "current_page": self.current_page,
             "total_pages": self.total_pages,
             "progress_pct": self.progress_percentage(),
@@ -203,6 +206,7 @@ class JobManager:
     _jobs: ClassVar[dict[str, JobInfo]] = {}
     _processes: ClassVar[dict[str, subprocess.Popen]] = {}
     _threads: ClassVar[dict[str, threading.Thread]] = {}
+    _execution_slots: ClassVar[dict[str, Path]] = {}
     # RLock diperlukan karena start_job/list_all_documents memanggil get_job
     # saat lock sudah dipegang oleh thread yang sama.
     _lock: ClassVar[threading.RLock] = threading.RLock()
@@ -225,6 +229,7 @@ class JobManager:
         chunk_size: int = 1000,
         chunk_overlap: int = 150,
         resume: bool = False,
+        queue_position: int = 0,
     ) -> JobInfo:
         """Antrekan ekstraksi baru jika dokumen yang sama belum diproses."""
         with self._lock:
@@ -276,6 +281,7 @@ class JobManager:
                 status_file=status_file,
                 progress_file=progress_file,
                 status="queued",
+                queue_position=queue_position,
                 stage="Menunggu slot ekstraksi VLM...",
                 last_message="Job masuk antrean ekstraksi.",
                 started_at=start_iso,
@@ -395,8 +401,20 @@ class JobManager:
 
         while True:
             with self._lock:
-                if job.status == "canceled":
+                if job.status in {"canceled", "paused"}:
                     return None
+                earlier_active = sum(
+                    other.status in {"queued", "running"}
+                    and other.queue_position < job.queue_position
+                    and other.output_dir.resolve() == job.output_dir.resolve()
+                    for other in self._jobs.values()
+                )
+                should_wait_for_order = (
+                    earlier_active >= get_max_concurrent_extractions()
+                )
+            if should_wait_for_order:
+                time.sleep(_SLOT_POLL_SECONDS)
+                continue
 
             for slot_path in slot_paths:
                 try:
@@ -484,6 +502,7 @@ class JobManager:
             )
             with self._lock:
                 self._processes[job.job_id] = proc
+                self._execution_slots[job.job_id] = slot_path
                 job.pid = proc.pid
                 job.status = "running"
                 job.stage = "Proses CLI aktif, menunggu parsing halaman..."
@@ -556,7 +575,9 @@ class JobManager:
                 job.last_message = f"Exception: {exc}"
                 job.save_status()
         finally:
-            self._release_execution_slot(slot_path, job.run_id)
+            with self._lock:
+                held_slot = self._execution_slots.pop(job.job_id, slot_path)
+            self._release_execution_slot(held_slot, job.run_id)
 
     @staticmethod
     def _recover_terminated_job(job: JobInfo) -> None:
@@ -725,6 +746,7 @@ class JobManager:
                         )
                     ),
                     status=data.get("status", "failed"),
+                    queue_position=int(data.get("queue_position", 0)),
                     current_page=data.get("current_page", 0),
                     total_pages=data.get("total_pages", 0),
                     stage=data.get("stage", "Tidak diketahui"),
@@ -820,6 +842,9 @@ class JobManager:
         # Matikan proses sistem operasi
         if proc and proc.poll() is None:
             try:
+                # SIGTERM tidak diproses oleh proses yang sedang SIGSTOP.
+                if job.status == "paused" and sys.platform != "win32":
+                    os.kill(proc.pid, signal.SIGCONT)
                 # Di Windows, gunakan taskkill tree agar proses anak (soffice, python) ikut mati
                 if sys.platform == "win32" and job.pid:
                     subprocess.run(
@@ -838,6 +863,118 @@ class JobManager:
             job.save_status()
 
         return True
+
+    def pause_job(self, stem: str) -> bool:
+        """Jeda job antrean atau suspend subprocess yang sedang berjalan."""
+        with self._lock:
+            job = self.get_job(stem)
+            proc = self._processes.get(stem)
+        if not job or job.status not in {"queued", "running"}:
+            return False
+
+        if proc and proc.poll() is None:
+            try:
+                if sys.platform == "win32":
+                    import psutil
+
+                    psutil.Process(proc.pid).suspend()
+                else:
+                    os.kill(proc.pid, signal.SIGSTOP)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Gagal menjeda proses %s: %s", stem, exc)
+                return False
+
+            # Slot harus dibuka agar job lain dapat langsung mengambil alih.
+            with self._lock:
+                slot_path = self._execution_slots.pop(stem, None)
+            self._release_execution_slot(slot_path, job.run_id)
+
+        with self._lock:
+            job.status = "paused"
+            job.stage = "Dijeda oleh pengguna"
+            job.last_message = "Ekstraksi dijeda; tekan lanjutkan untuk meneruskan."
+            job.save_status()
+        return True
+
+    def resume_job(self, stem: str, output_dir: Path) -> bool:
+        """Lanjutkan job yang dijeda, baik dari antrean maupun subprocess suspend."""
+        job = self.get_job(stem, output_dir=output_dir)
+        if not job or job.status != "paused":
+            return False
+        proc = self._processes.get(stem)
+        if proc and proc.poll() is None:
+            with self._lock:
+                job.status = "queued"
+                job.stage = "Menunggu slot untuk melanjutkan..."
+                job.last_message = "Menunggu slot kosong untuk melanjutkan ekstraksi."
+                job.save_status()
+            threading.Thread(
+                target=self._resume_suspended_process,
+                args=(job, proc),
+                daemon=True,
+                name=f"Resume-{job.job_id}",
+            ).start()
+            return True
+
+        with self._lock:
+            job.status = "queued"
+            job.stage = "Menunggu slot ekstraksi VLM..."
+            job.last_message = "Job kembali ke antrean ekstraksi."
+            job.save_status()
+            worker = self._threads.get(job.job_id)
+            if worker is None or not worker.is_alive():
+                self._launch_job(job, resume=self._checkpoint_path(job).exists())
+        return True
+
+    def _resume_suspended_process(self, job: JobInfo, proc: subprocess.Popen) -> None:
+        """Ambil kembali slot lalu lepaskan suspend pada subprocess yang dijeda."""
+        slot_path = self._acquire_execution_slot(job)
+        if slot_path is None:
+            return
+        try:
+            if proc.poll() is not None:
+                self._release_execution_slot(slot_path, job.run_id)
+                return
+            if sys.platform == "win32":
+                import psutil
+
+                psutil.Process(proc.pid).resume()
+            else:
+                os.kill(proc.pid, signal.SIGCONT)
+            with self._lock:
+                self._execution_slots[job.job_id] = slot_path
+                job.status = "running"
+                job.stage = "Proses dilanjutkan"
+                job.last_message = "Ekstraksi dilanjutkan oleh pengguna."
+                job.save_status()
+            self._write_slot_owner(slot_path, job, subprocess_pid=proc.pid)
+        except Exception as exc:  # noqa: BLE001
+            self._release_execution_slot(slot_path, job.run_id)
+            with self._lock:
+                job.status = "failed"
+                job.error_message = f"Gagal melanjutkan proses: {exc}"
+                job.last_message = job.error_message
+                job.save_status()
+
+    def prioritize_job(self, stem: str, output_dir: Path | None = None) -> bool:
+        """Pindahkan job yang masih dalam antrean ke urutan terdepan."""
+        with self._lock:
+            job = self.get_job(stem, output_dir=output_dir)
+            if not job or job.status != "queued":
+                return False
+            min_pos = min(
+                (
+                    other.queue_position
+                    for other in self._jobs.values()
+                    if other.status in {"queued", "running"}
+                ),
+                default=0,
+            )
+            job.queue_position = min_pos - 1
+            job.stage = "Diprioritaskan ke antrean terdepan"
+            job.last_message = "File ini diprioritaskan oleh pengguna untuk diproses berikutnya."
+            job.save_status()
+            return True
 
     def restart_job(self, stem: str, output_dir: Path) -> JobInfo:
         """Mulai ulang langsung, dengan sumber dan opsi proses sebelumnya."""
@@ -976,14 +1113,16 @@ class JobManager:
         return docs
 
     def get_active_job_counts(self, output_dir: Path) -> dict[str, int]:
-        """Hitung job ingest aktif yang berjalan atau menunggu slot VLM."""
+        """Hitung job ingest aktif, termasuk job yang sedang dijeda."""
         documents = self.list_all_documents(output_dir)
         running = sum(document["status"] == "running" for document in documents)
         queued = sum(document["status"] == "queued" for document in documents)
+        paused = sum(document["status"] == "paused" for document in documents)
         return {
             "running": running,
             "queued": queued,
-            "active": running + queued,
+            "paused": paused,
+            "active": running + queued + paused,
         }
 
     def get_latest_logs(self, stem: str, line_count: int = 40) -> str:
