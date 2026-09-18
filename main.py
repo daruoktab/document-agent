@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bersihkan folder output dokumen sebelum memproses ulang dokumen yang sama.",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Lanjutkan ekstraksi dari checkpoint halaman terakhir yang selesai.",
+    )
+    parser.add_argument(
         "--clean-all",
         action="store_true",
         help="Bersihkan seluruh sub-folder hasil di folder output (reset folder output).",
@@ -351,6 +356,7 @@ def main() -> int:
                 force_all_tables=args.force_all_tables,
                 output_markdown_path=markdown_out_file,
                 output_dir=doc_output_dir / "pages",
+                resume=args.resume,
             )
             markdown_content = doc_result.full_markdown
 
@@ -370,6 +376,7 @@ def main() -> int:
                 force_all_tables=args.force_all_tables,
                 output_markdown_path=markdown_out_file,
                 output_dir=doc_output_dir / "pages",
+                resume=args.resume,
             )
             markdown_content = doc_result.full_markdown
 
@@ -393,6 +400,7 @@ def main() -> int:
                     force_all_tables=args.force_all_tables,
                     output_markdown_path=markdown_out_file,
                     output_dir=doc_output_dir / "slides",
+                    resume=args.resume,
                 )
 
         # 8. File PDF Multi-Halaman
@@ -410,6 +418,7 @@ def main() -> int:
                 force_all_tables=args.force_all_tables,
                 output_markdown_path=markdown_out_file,
                 output_dir=doc_output_dir / "pages",
+                resume=args.resume,
             )
             markdown_content = doc_result.full_markdown
 

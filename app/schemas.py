@@ -61,6 +61,10 @@ class PageInspectionResult(BaseModel):
         default=0,
         description="Rotasi searah jarum jam yang diperlukan agar halaman tegak",
     )
+    requires_vlm_reading: bool = Field(
+        default=False,
+        description="True bila VLM utama perlu mengekstrak halaman secara independen karena teks atau layout sulit dibaca",
+    )
 
     def __getitem__(self, key: str) -> Any:
         """Kompatibilitas backward untuk akses dict: insp_res['specs']."""
@@ -196,6 +200,7 @@ class PipelinePageResult(BaseModel):
         "retried_rotated",
         "corrected_by_vlm",
         "fallback_vlm",
+        "vlm_visual_rescue",
         "blank_page",
         "success",
         "disabled",
@@ -212,6 +217,10 @@ class PipelinePageResult(BaseModel):
     ocr_trust_level: Literal["high", "medium", "low"] = Field(default="low")
     ocr_risk_flags: list[str] = Field(default_factory=list)
     rotation_degrees: Literal[0, 90, 180, 270] = 0
+    vlm_visual_rescue: bool = Field(
+        default=False,
+        description="True bila VLM utama mengambil alih pembacaan halaman yang sulit secara visual",
+    )
 
     def __getitem__(self, key: str) -> Any:
         """Kompatibilitas backward untuk akses berbasis dict: result['markdown_content']."""

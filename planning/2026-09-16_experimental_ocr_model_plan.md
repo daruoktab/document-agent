@@ -31,7 +31,7 @@ Server OCR membutuhkan build llama.cpp yang memahami DeepSeek-OCR serta pasangan
 4. Nilai trust OCR dari bentuk output, grounding, kepadatan tinta, indikasi halaman menyamping, repetisi, dan kemiripan dengan text-layer PDF bila tersedia.
 5. Untuk kandidat berisiko, coba orientasi alternatif dan pilih skor terbaik. Halaman benar-benar kosong dihentikan tanpa memanggil OCR.
 6. Parse `<|det|>label [x1,y1,x2,y2]<|/det|>` secara defensif dan simpan crop `table`/`figure` beserta manifest audit.
-7. Gunakan Markdown OCR hanya bila trust `high`. Untuk trust `medium`/`low`, error, atau OCR nonaktif, jalankan ekstraksi VLM independen—bukan memperbaiki draft OCR yang mungkin salah.
+7. Gunakan Markdown OCR hanya bila trust `high` dan inspeksi VLM tidak meminta *visual rescue*. Untuk trust `medium`/`low`, error, OCR nonaktif, atau halaman berfont sangat kecil/padat, teks miring penting, anotasi teknis kecil, multi-kolom rapat, maupun kontras rendah, jalankan ekstraksi VLM independen—bukan memperbaiki draft OCR yang mungkin salah.
 8. Kirim crop figure ke specialist Mermaid dan jalankan judge VLM pada halaman non-kosong. Koreksi judge dicatat sebagai `corrected_by_vlm`.
 9. Lanjutkan jalur SQLite/tabular dan penyatuan multi-halaman yang sudah ada.
 
@@ -41,7 +41,7 @@ Alur tersebut digunakan oleh pipeline deterministik serta tool dokumen di Deep A
 
 `PipelinePageResult` membawa:
 
-- `ocr_status`: `accepted`, `retried_rotated`, `corrected_by_vlm`, `fallback_vlm`, `blank_page`, `disabled`, atau `error`;
+- `ocr_status`: `accepted`, `retried_rotated`, `corrected_by_vlm`, `fallback_vlm`, `vlm_visual_rescue`, `blank_page`, `disabled`, atau `error`;
 - nama model dan latency OCR;
 - skor/trust OCR, risk flags, serta rotasi final yang diterapkan;
 - daftar region dengan label, jenis, koordinat model, koordinat piksel, teks region, dan path crop;
@@ -56,6 +56,7 @@ Isi respons tidak ditulis ke log pipeline umum. Manifest berada di direktori out
 BASE_URL=http://127.0.0.1:8080/v1
 VLM_MODEL=Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
 VLM_ENABLE_THINKING=false
+VLM_VISUAL_RESCUE=true
 VLM_TEMPERATURE=0.1
 VLM_TIMEOUT=300
 

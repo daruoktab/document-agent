@@ -13,6 +13,7 @@ Menyediakan fungsi untuk:
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -259,6 +260,7 @@ def process_multipage_pdf(
     force_all_tables: bool = False,
     output_markdown_path: str | Path | None = None,
     source_file_for_records: str | Path | None = None,
+    resume: bool = False,
 ) -> ExtractedDocument:
     """
     Proses seluruh halaman PDF dan gabungkan hasil ekstraksi menjadi teks Markdown utuh siap chunking.
@@ -321,13 +323,6 @@ def process_multipage_pdf(
     if resolved_db_path:
         resolved_db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    stream_file: Path | None = None
-    if output_markdown_path:
-        stream_file = Path(output_markdown_path).resolve()
-        stream_file.parent.mkdir(parents=True, exist_ok=True)
-        stream_file.write_text("", encoding="utf-8")
-        logger.info("Streaming output Markdown ke: %s", stream_file)
-
     # Tentukan folder output render gambar halaman PDF
     if output_dir:
         pages_render_dir: Path | None = Path(output_dir).resolve()
@@ -336,17 +331,130 @@ def process_multipage_pdf(
     else:
         pages_render_dir = Path("output") / pdf_path.stem / "pages"
 
+    stream_file: Path | None = None
+    checkpoint_file: Path | None = None
+    checkpoint_pages: dict[int, dict[str, Any]] = {}
+    if output_markdown_path:
+        stream_file = Path(output_markdown_path).resolve()
+        stream_file.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_file = (
+            stream_file.parent / "logs" / f"{stream_file.stem}_checkpoint.json"
+        )
+        if resume and checkpoint_file.exists():
+            try:
+                checkpoint_data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                if (
+                    checkpoint_data.get("source_file") == record_source
+                    and checkpoint_data.get("total_pages") == total_pages
+                ):
+                    raw_pages = checkpoint_data.get("pages", {})
+                    if isinstance(raw_pages, dict):
+                        checkpoint_pages = {
+                            int(page_number): page_data
+                            for page_number, page_data in raw_pages.items()
+                            if isinstance(page_data, dict)
+                        }
+                    document_title = checkpoint_data.get("document_title")
+                    logger.info(
+                        "[PDF] Melanjutkan dari checkpoint: %d/%d halaman selesai.",
+                        len(checkpoint_pages),
+                        total_pages,
+                    )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                logger.warning("[PDF] Checkpoint tidak dapat dibaca: %s", exc)
+
+        if checkpoint_pages:
+            restored_pages: list[dict[str, Any]] = []
+            for page_number in sorted(checkpoint_pages):
+                page_data = checkpoint_pages[page_number]
+                page_md = str(page_data.get("markdown", ""))
+                page_specs = page_data.get("specs") or ["plain"]
+                pages_md.append(page_md)
+                all_page_specs.append(list(page_specs))
+                pages.append(
+                    DocumentPage(
+                        page_number=page_number,
+                        specs=list(page_specs),
+                        markdown_content=page_md,
+                        image_path=str(pages_render_dir / f"page_{page_number:04d}.png"),
+                    )
+                )
+                event_data = page_data.get("tabular_event")
+                if isinstance(event_data, dict):
+                    tabular_events.append(PageTabularEvent.model_validate(event_data))
+                total_visuals += int(page_data.get("visual_count", 0))
+                total_tables += int(page_data.get("table_count", 0))
+                restored_pages.append({"page_number": page_number, "content": page_md})
+
+            previous_context = (
+                f"Konteks Dokumen: Judul: '{document_title}'. "
+                f"Halaman saat ini: Halaman {max(checkpoint_pages) + 1}/{total_pages} "
+                "(halaman lanjutan, jangan mengulang judul dokumen sebagai heading #).\n\n"
+                + restored_pages[-1]["content"][-400:]
+            )
+            stream_file.write_text(
+                "\n".join(
+                    f"\n{format_page_delimiter(page['page_number'])}\n\n"
+                    f"{page['content']}\n\n---\n"
+                    for page in restored_pages
+                ),
+                encoding="utf-8",
+            )
+        else:
+            stream_file.write_text("", encoding="utf-8")
+        logger.info("Streaming output Markdown ke: %s", stream_file)
+
+    def save_checkpoint() -> None:
+        if checkpoint_file is None:
+            return
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_data = {
+            "version": 1,
+            "source_file": record_source,
+            "total_pages": total_pages,
+            "document_title": document_title,
+            "pages": {
+                str(page.page_number): {
+                    "markdown": page.markdown_content,
+                    "specs": page.specs,
+                    "visual_count": checkpoint_pages.get(page.page_number, {}).get(
+                        "visual_count", 0
+                    ),
+                    "table_count": checkpoint_pages.get(page.page_number, {}).get(
+                        "table_count", 0
+                    ),
+                    "tabular_event": checkpoint_pages.get(page.page_number, {}).get(
+                        "tabular_event"
+                    ),
+                }
+                for page in pages
+            },
+        }
+        temporary = checkpoint_file.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(checkpoint_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(checkpoint_file)
+
     # Proses BERTAHAP per batch 10 halaman: render batch -> ekstrak batch -> lanjut.
     for b_start in range(0, total_pages, PDF_PAGE_BATCH):
         b_end = min(b_start + PDF_PAGE_BATCH, total_pages)
+        pending_page_numbers = [
+            page_number
+            for page_number in range(b_start + 1, b_end + 1)
+            if page_number not in checkpoint_pages
+        ]
+        if not pending_page_numbers:
+            continue
         page_images = pdf_to_images(
             pdf_path,
             output_dir=pages_render_dir,
             dpi=dpi,
-            pages=list(range(b_start, b_end)),
+            pages=[page_number - 1 for page_number in pending_page_numbers],
         )
 
-        for idx, img_path in enumerate(page_images, start=b_start + 1):
+        for idx, img_path in zip(pending_page_numbers, page_images, strict=True):
             logger.info(
                 "Memproses Halaman %d / %d dari '%s'...",
                 idx,
@@ -441,6 +549,17 @@ def process_multipage_pdf(
                     f.write(f"\n{delimiter}\n\n{page_md}\n\n---\n")
                     f.flush()
 
+            checkpoint_pages[idx] = {
+                "markdown": page_md,
+                "specs": detected_specs,
+                "visual_count": int(res.get("visual_count", 0)),
+                "table_count": int(res.get("table_count", 0)),
+                "tabular_event": tab_event.model_dump(mode="json")
+                if auto_tabular_db and resolved_db_path
+                else None,
+            }
+            save_checkpoint()
+
     # Jahit teks seluruh halaman menjadi satu teks Markdown utuh dengan judul utama
     full_md = stitch_pages_to_markdown(
         pages_md,
@@ -481,6 +600,11 @@ def process_multipage_pdf(
         total_visuals,
         total_tables,
     )
+
+    if stream_file:
+        stream_file.write_text(full_md, encoding="utf-8")
+    if checkpoint_file:
+        checkpoint_file.unlink(missing_ok=True)
 
     return ExtractedDocument(
         source_file=record_source,

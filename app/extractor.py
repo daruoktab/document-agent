@@ -148,7 +148,7 @@ class VisionExtractor:
         Mengembalikan PageInspectionResult berisi specs, has_diagram, diagram_type, has_table, dan document_title.
         """
         title_instruction = (
-            "7. document_title: Judul utama dokumen jika ini adalah halaman 1 / sampul / halaman judul, atau null jika tidak terlihat jelas.\n"
+            "8. document_title: Judul utama dokumen jika ini adalah halaman 1 / sampul / halaman judul, atau null jika tidak terlihat jelas.\n"
             if is_first_page
             else ""
         )
@@ -174,6 +174,7 @@ class VisionExtractor:
             "   - 'standard': ada struktur (list, heading, tabel sederhana).\n"
             "   - 'complex': ada diagram/topologi, multi-kolom, chat, form tanda tangan, atau teks padat.\n"
             "6. rotation_degrees: rotasi SEARAH JARUM JAM yang diperlukan agar seluruh teks tegak dan nyaman dibaca. Pilih tepat satu dari 0, 90, 180, 270.\n"
+            "7. requires_vlm_reading: true bila VLM utama perlu melakukan ekstraksi Markdown independen, bukan hanya judge. Pilih true untuk font sangat kecil/padat, teks miring atau bergaya yang presisinya penting, anotasi teknis kecil, multi-kolom rapat, kontras rendah, atau bagian lain yang berisiko hilang bila hanya mengandalkan OCR. Jangan pilih true hanya karena ada tabel/diagram yang tetap terbaca jelas.\n"
             f"{title_instruction}\n"
             "Outputkan HANYA format JSON valid tanpa pengantar:\n"
             "{\n"
@@ -183,6 +184,7 @@ class VisionExtractor:
             '  "has_table": true/false,\n'
             '  "difficulty": "simple" atau "standard" atau "complex",\n'
             '  "rotation_degrees": 0 atau 90 atau 180 atau 270,\n'
+            '  "requires_vlm_reading": true/false,\n'
             f"{title_json_field}"
             '  "reasoning": "penjelasan singkat"\n'
             "}"
@@ -215,6 +217,7 @@ class VisionExtractor:
                 rotation = data.get("rotation_degrees", 0)
                 if rotation not in (0, 90, 180, 270):
                     rotation = 0
+                requires_vlm_reading = data.get("requires_vlm_reading") is True
                 return PageInspectionResult(
                     specs=norm_specs,
                     has_diagram=bool(data.get("has_diagram", False)),
@@ -224,6 +227,7 @@ class VisionExtractor:
                     reasoning=data.get("reasoning"),
                     document_title=doc_title,
                     rotation_degrees=rotation,
+                    requires_vlm_reading=requires_vlm_reading,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning("[Extractor:Inspect] Gagal inspect JSON (%s), fallback ke classify biasa.", e)

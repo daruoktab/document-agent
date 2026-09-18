@@ -41,3 +41,9 @@ input/*
 Thumbs.db
 .DS_Store
 opencode.json
+
+# ============ Deployment ============
+deploy/
+
+# ============ Model ============
+model/

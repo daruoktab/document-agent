@@ -147,6 +147,9 @@ class Settings:
     vlm_enable_thinking: bool = field(
         default_factory=lambda: _bool_env("VLM_ENABLE_THINKING", "false")
     )
+    vlm_visual_rescue: bool = field(
+        default_factory=lambda: _bool_env("VLM_VISUAL_RESCUE", "true")
+    )
 
     # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
     ocr_model: str = field(default_factory=lambda: _optional_env("OCR_MODEL"))

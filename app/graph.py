@@ -54,6 +54,7 @@ class DocumentExtractionState(TypedDict, total=False):
     region_output_dir: str | None
     native_text: str | None
     inspection_rotation_degrees: int
+    requires_vlm_reading: bool
     ocr_force_judge: bool
     ocr_result: dict[str, Any]
     ocr_status: str
@@ -276,6 +277,7 @@ class DocumentExtractionPipeline:
                 if ocr_payload.decision == "blank_page"
                 else ocr_payload.rotation_degrees,
             ),
+            vlm_visual_rescue=bool(final_state.get("requires_vlm_reading", False)),
         )
 
     # =========================================================================
@@ -314,60 +316,50 @@ class DocumentExtractionPipeline:
         forced_specs = state.get("forced_specs")
         forced_doc_type = state.get("forced_doc_type")
         img = state.get("preprocessed_path") or state["image_path"]
-        # Jika spesifikasi dipaksa secara manual oleh user
-        if forced_specs:
-            norm_specs = normalize_specs(forced_specs)
-            logger.info("[Pipeline:Classify] Menggunakan forced_specs: %s", norm_specs)
-            return {
-                **state,
-                "specs": norm_specs,
-                "doc_type": ",".join(norm_specs),
-                # Diagram dideteksi post-extraction via output indicators (fast-path),
-                # bukan diasumsikan ada hanya karena spec = presentation_slides.
-                "has_diagram": False,
-                "diagram_type": None,
-                "has_table": False,
-                "difficulty": "standard",
-                "inspection_rotation_degrees": 0,
-            }
-
-        if forced_doc_type:
-            norm_specs = normalize_specs(forced_doc_type)
-            logger.info("[Pipeline:Classify] Menggunakan forced_doc_type: %s", norm_specs)
-            return {
-                **state,
-                "specs": norm_specs,
-                "doc_type": ",".join(norm_specs),
-                "has_diagram": False,
-                "diagram_type": None,
-                "has_table": False,
-                "difficulty": "standard",
-                "inspection_rotation_degrees": 0,
-            }
-
-        # Inspeksi otomatis via VLM
+        # Tetap inspeksi visual meski layout dipaksa: keputusan user menentukan
+        # spesifikasi, sementara VLM menentukan orientasi dan apakah teks kecil
+        # perlu dibaca ulang secara independen.
         t0 = time.perf_counter()
         is_first = bool(state.get("is_first_page", False))
         insp_res = self.extractor.inspect_page(img, is_first_page=is_first)
         elapsed = (time.perf_counter() - t0) * 1000
 
-        detected_specs = insp_res.get("specs", ["plain"])
+        forced_layout = forced_specs or forced_doc_type
+        detected_specs = (
+            normalize_specs(forced_layout)
+            if forced_layout
+            else insp_res.get("specs", ["plain"])
+        )
         has_diag = bool(insp_res.get("has_diagram", False))
         diag_type = insp_res.get("diagram_type")
         has_tbl = bool(insp_res.get("has_table", False))
         difficulty = str(insp_res.get("difficulty", "standard"))
         doc_title = getattr(insp_res, "document_title", None) or insp_res.get("document_title")
+        requires_vlm_reading = bool(insp_res.requires_vlm_reading) and bool(
+            self.settings.vlm_visual_rescue
+        )
 
         if doc_title:
             logger.info("[Pipeline:Classify] Judul dokumen terdeteksi: '%s'", doc_title)
+        if forced_layout:
+            logger.info(
+                "[Pipeline:Classify] Menggunakan layout paksa: %s; inspeksi visual tetap aktif.",
+                detected_specs,
+            )
+        if requires_vlm_reading:
+            logger.info(
+                "[Pipeline:Classify] VLM visual rescue aktif: %s",
+                insp_res.reasoning or "teks/layout perlu pembacaan presisi",
+            )
 
         logger.info(
-            "[Pipeline:Classify] Layout: %s | Diagram: %s (%s) | Tabel: %s | Difficulty: %s%s (%.1fms)",
+            "[Pipeline:Classify] Layout: %s | Diagram: %s (%s) | Tabel: %s | Difficulty: %s | VLM rescue: %s%s (%.1fms)",
             detected_specs,
             has_diag,
             diag_type,
             has_tbl,
             difficulty,
+            requires_vlm_reading,
             f" | Judul: '{doc_title}'" if doc_title else "",
             elapsed,
         )
@@ -382,6 +374,7 @@ class DocumentExtractionPipeline:
             "difficulty": difficulty,
             "document_title": doc_title or state.get("document_title"),
             "inspection_rotation_degrees": insp_res.rotation_degrees,
+            "requires_vlm_reading": requires_vlm_reading,
         }
 
     def _node_normalize_orientation(
@@ -459,6 +452,7 @@ class DocumentExtractionPipeline:
             ocr_result.status == "success"
             and ocr_result.trust_level == "high"
             and ocr_result.markdown.strip()
+            and not state.get("requires_vlm_reading", False)
         ):
             md_text = ocr_result.markdown
             ocr_status = ocr_result.decision
@@ -470,8 +464,12 @@ class DocumentExtractionPipeline:
                 llm=self.vlm,
                 previous_page_context=prev_context,
             )
-            ocr_status = "fallback_vlm"
-            source = "VLM utama independen (OCR tidak dipercaya/tersedia)"
+            if state.get("requires_vlm_reading", False):
+                ocr_status = "vlm_visual_rescue"
+                source = "VLM utama independen (visual rescue teks/layout sulit)"
+            else:
+                ocr_status = "fallback_vlm"
+                source = "VLM utama independen (OCR tidak dipercaya/tersedia)"
 
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info(

@@ -50,6 +50,7 @@ Buat berkas `.env` di direktori utama repositori. Model OCR sengaja boleh dikoso
 BASE_URL=http://127.0.0.1:8080/v1
 VLM_MODEL=Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
 VLM_ENABLE_THINKING=false
+VLM_VISUAL_RESCUE=true
 VLM_TEMPERATURE=0.1
 VLM_TIMEOUT=300
 
@@ -65,7 +66,7 @@ OCR_BLANK_INK_RATIO=0.0002
 OCR_SPARSE_INK_RATIO=0.015
 ```
 
-Ketika `OCR_MODEL` diisi, OCR menjadi sumber draft Markdown utama hanya setelah lolos quality gate. Pipeline mengoreksi orientasi, membandingkan hasil dengan text-layer PDF bila tersedia, mencoba rotasi alternatif pada kandidat berisiko, dan memakai ekstraksi VLM independen saat trust OCR rendah. Grounding `table` dan `figure` dipotong ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman untuk masa setup karena mengaktifkan fallback VLM.
+Ketika `OCR_MODEL` diisi, OCR menjadi sumber draft Markdown utama hanya setelah lolos quality gate. Pipeline mengoreksi orientasi, membandingkan hasil dengan text-layer PDF bila tersedia, mencoba rotasi alternatif pada kandidat berisiko, dan memakai ekstraksi VLM independen saat trust OCR rendah. Dengan `VLM_VISUAL_RESCUE=true`, VLM juga mengambil alih pembacaan halaman berfont sangat kecil/padat, teks miring penting, anotasi teknis kecil, multi-kolom rapat, atau kontras rendah—meski OCR lolos trust tinggi. Grounding `table` dan `figure` dipotong ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman untuk masa setup karena mengaktifkan fallback VLM.
 
 ---
 

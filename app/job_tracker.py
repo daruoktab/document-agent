@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -96,21 +97,19 @@ class JobInfo:
     latest_log_path: Path
     status_file: Path
     progress_file: Path
-    status: str = "queued"  # "queued" | "running" | "completed" | "failed" | "canceled"
+    status: str = "queued"  # "queued" | "running" | "paused" | "completed" | "failed" | "canceled"
+    queue_position: int = 0
     current_page: int = 0
     total_pages: int = 0
     stage: str = "Memulai ekstraksi..."
     last_message: str = ""
     started_at: str = field(
-        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(
-            timespec="seconds"
-        )
+        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
     )
     updated_at: str = field(
-        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(
-            timespec="seconds"
-        )
+        default_factory=lambda: dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
     )
+    completed_at: str | None = None
     pid: int | None = None
     returncode: int | None = None
     error_message: str | None = None
@@ -144,6 +143,7 @@ class JobInfo:
             "status_file": str(self.status_file),
             "progress_file": str(self.progress_file),
             "status": self.status,
+            "queue_position": self.queue_position,
             "current_page": self.current_page,
             "total_pages": self.total_pages,
             "progress_pct": self.progress_percentage(),
@@ -151,6 +151,7 @@ class JobInfo:
             "last_message": self.last_message,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
+            "completed_at": self.completed_at,
             "pid": self.pid,
             "returncode": self.returncode,
             "error_message": self.error_message,
@@ -162,9 +163,7 @@ class JobInfo:
         """Simpan status JSON dan ringkasan TXT ke disk secara atomic/aman."""
         try:
             self.status_file.parent.mkdir(parents=True, exist_ok=True)
-            self.updated_at = dt.datetime.now(dt.UTC).isoformat(
-                timespec="seconds"
-            )
+            self.updated_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
             # 1. Simpan JSON terstruktur
             self.status_file.write_text(
@@ -207,6 +206,7 @@ class JobManager:
     _jobs: ClassVar[dict[str, JobInfo]] = {}
     _processes: ClassVar[dict[str, subprocess.Popen]] = {}
     _threads: ClassVar[dict[str, threading.Thread]] = {}
+    _execution_slots: ClassVar[dict[str, Path]] = {}
     # RLock diperlukan karena start_job/list_all_documents memanggil get_job
     # saat lock sudah dipegang oleh thread yang sama.
     _lock: ClassVar[threading.RLock] = threading.RLock()
@@ -228,6 +228,8 @@ class JobManager:
         preview_chunks: bool = False,
         chunk_size: int = 1000,
         chunk_overlap: int = 150,
+        resume: bool = False,
+        queue_position: int = 0,
     ) -> JobInfo:
         """Antrekan ekstraksi baru jika dokumen yang sama belum diproses."""
         with self._lock:
@@ -248,9 +250,11 @@ class JobManager:
             status_file = log_dir / f"{stem}_status.json"
             progress_file = log_dir / f"{stem}_progress.txt"
             out_file = doc_output_dir / f"{stem}.md"
+            checkpoint_file = log_dir / f"{stem}_checkpoint.json"
             db_dir = doc_output_dir / "databases"
             db_dir.mkdir(parents=True, exist_ok=True)
             db_file = db_dir / f"{stem}.sqlite"
+            effective_resume = resume or checkpoint_file.exists()
 
             # Tulis header awal ke file log agar langsung tersedia
             start_iso = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
@@ -277,6 +281,7 @@ class JobManager:
                 status_file=status_file,
                 progress_file=progress_file,
                 status="queued",
+                queue_position=queue_position,
                 stage="Menunggu slot ekstraksi VLM...",
                 last_message="Job masuk antrean ekstraksi.",
                 started_at=start_iso,
@@ -287,46 +292,75 @@ class JobManager:
                     "preview_chunks": preview_chunks,
                     "chunk_size": chunk_size,
                     "chunk_overlap": chunk_overlap,
+                    "resume": effective_resume,
                 },
             )
             job.save_status()
             self._jobs[stem] = job
 
-            # Susun perintah CLI
-            cmd = [
-                get_python_executable(),
-                str(PROJECT_ROOT / "main.py"),
-                str(input_path),
-                "-o",
-                str(out_file),
-                "--dpi",
-                str(dpi),
-                "--log-file",
-                str(log_path),
-            ]
-            if doc_type:
-                cmd.extend(["-t", doc_type])
-            if force_all_tables:
-                cmd.append("--force-all-tables")
-            if preview_chunks:
-                cmd.extend([
+            self._launch_job(job, resume=effective_resume)
+            return job
+
+    @staticmethod
+    def _checkpoint_path(job: JobInfo) -> Path:
+        return job.out_file.parent / "logs" / f"{job.out_file.stem}_checkpoint.json"
+
+    def _launch_job(self, job: JobInfo, *, resume: bool = False) -> None:
+        """Jalankan worker untuk job baru atau job yang dipulihkan dari checkpoint."""
+        cmd = [
+            get_python_executable(),
+            str(PROJECT_ROOT / "main.py"),
+            str(job.input_path),
+            "-o",
+            str(job.out_file),
+            "--dpi",
+            str(job.extraction_options.get("dpi", 200)),
+            "--log-file",
+            str(job.log_path),
+        ]
+        doc_type = job.extraction_options.get("doc_type")
+        if doc_type:
+            cmd.extend(["-t", str(doc_type)])
+        if job.extraction_options.get("force_all_tables"):
+            cmd.append("--force-all-tables")
+        if job.extraction_options.get("preview_chunks"):
+            cmd.extend(
+                [
                     "--preview-chunks",
                     "--chunk-size",
-                    str(chunk_size),
+                    str(job.extraction_options.get("chunk_size", 1000)),
                     "--chunk-overlap",
-                    str(chunk_overlap),
-                ])
-
-            # Jalankan worker di background thread terpisah
-            worker = threading.Thread(
-                target=self._run_worker,
-                args=(job, cmd),
-                daemon=True,
-                name=f"Worker-{stem}",
+                    str(job.extraction_options.get("chunk_overlap", 150)),
+                ]
             )
-            self._threads[stem] = worker
-            worker.start()
-            return job
+        if resume:
+            cmd.append("--resume")
+
+        worker = threading.Thread(
+            target=self._run_worker,
+            args=(job, cmd),
+            daemon=True,
+            name=f"Worker-{job.job_id}",
+        )
+        self._threads[job.job_id] = worker
+        worker.start()
+
+    def resume_pending_jobs(self, output_dir: Path) -> int:
+        """Mulai ulang job terhenti yang memiliki checkpoint halaman."""
+        resumed = 0
+        for document in self.list_all_documents(output_dir):
+            if document["status"] != "queued":
+                continue
+            job = self.get_job(document["stem"], output_dir=output_dir)
+            if job is None or not self._checkpoint_path(job).exists():
+                continue
+            with self._lock:
+                worker = self._threads.get(job.job_id)
+                if worker is not None and worker.is_alive():
+                    continue
+                self._launch_job(job, resume=True)
+            resumed += 1
+        return resumed
 
     @staticmethod
     def _slot_paths(output_dir: Path) -> list[Path]:
@@ -367,8 +401,20 @@ class JobManager:
 
         while True:
             with self._lock:
-                if job.status == "canceled":
+                if job.status in {"canceled", "paused"}:
                     return None
+                earlier_active = sum(
+                    other.status in {"queued", "running"}
+                    and other.queue_position < job.queue_position
+                    and other.output_dir.resolve() == job.output_dir.resolve()
+                    for other in self._jobs.values()
+                )
+                should_wait_for_order = (
+                    earlier_active >= get_max_concurrent_extractions()
+                )
+            if should_wait_for_order:
+                time.sleep(_SLOT_POLL_SECONDS)
+                continue
 
             for slot_path in slot_paths:
                 try:
@@ -456,6 +502,7 @@ class JobManager:
             )
             with self._lock:
                 self._processes[job.job_id] = proc
+                self._execution_slots[job.job_id] = slot_path
                 job.pid = proc.pid
                 job.status = "running"
                 job.stage = "Proses CLI aktif, menunggu parsing halaman..."
@@ -514,6 +561,9 @@ class JobManager:
                     )
                     job.last_message = job.error_message
 
+                if job.status in {"completed", "failed", "canceled"}:
+                    job.completed_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+
                 job.save_status()
 
         except Exception as exc:
@@ -525,7 +575,9 @@ class JobManager:
                 job.last_message = f"Exception: {exc}"
                 job.save_status()
         finally:
-            self._release_execution_slot(slot_path, job.run_id)
+            with self._lock:
+                held_slot = self._execution_slots.pop(job.job_id, slot_path)
+            self._release_execution_slot(held_slot, job.run_id)
 
     @staticmethod
     def _recover_terminated_job(job: JobInfo) -> None:
@@ -568,22 +620,16 @@ class JobManager:
         if m_page:
             job.current_page = int(m_page.group(1))
             job.total_pages = int(m_page.group(2))
-            job.stage = (
-                f"Ekstraksi VLM Halaman {job.current_page} / {job.total_pages}"
-            )
+            job.stage = f"Ekstraksi VLM Halaman {job.current_page} / {job.total_pages}"
             job.last_message = line
             updated = True
 
         # 2. Pola Slide PPT: "[Vision PPT] [Slide 2/8] Memproses slide..."
-        m_slide = re.search(
-            r"\[Slide\s+(\d+)\s*/\s*(\d+)\]", line, re.IGNORECASE
-        )
+        m_slide = re.search(r"\[Slide\s+(\d+)\s*/\s*(\d+)\]", line, re.IGNORECASE)
         if m_slide:
             job.current_page = int(m_slide.group(1))
             job.total_pages = int(m_slide.group(2))
-            job.stage = (
-                f"Ekstraksi VLM Slide {job.current_page} / {job.total_pages}"
-            )
+            job.stage = f"Ekstraksi VLM Slide {job.current_page} / {job.total_pages}"
             job.last_message = line
             updated = True
 
@@ -593,9 +639,7 @@ class JobManager:
         )
         if m_slides_total:
             job.total_pages = int(m_slides_total.group(1))
-            job.stage = (
-                f"Rendering selesai ({job.total_pages} slide), memulai VLM..."
-            )
+            job.stage = f"Rendering selesai ({job.total_pages} slide), memulai VLM..."
             job.last_message = line
             updated = True
 
@@ -630,9 +674,7 @@ class JobManager:
         if updated:
             job.save_status()
 
-    def get_job(
-        self, stem: str, output_dir: Path | None = None
-    ) -> JobInfo | None:
+    def get_job(self, stem: str, output_dir: Path | None = None) -> JobInfo | None:
         """Ambil info job dari memori atau rekonstruksi dari status.json di disk."""
         with self._lock:
             # 1. Cek dari memori
@@ -655,7 +697,15 @@ class JobManager:
                     # Worker thread may still be starting the subprocess.
                     # Do not mark a job failed before it receives a PID.
                     elif job.pid is not None and not is_pid_alive(job.pid):
-                        self._recover_terminated_job(job)
+                        if self._checkpoint_path(job).exists():
+                            job.status = "queued"
+                            job.pid = None
+                            job.returncode = None
+                            job.stage = "Checkpoint ditemukan, menyiapkan resume..."
+                            job.last_message = "Layanan sebelumnya berhenti; ekstraksi akan dilanjutkan."
+                            job.save_status()
+                        else:
+                            self._recover_terminated_job(job)
                 return job
 
         # 2. Jika tidak ada di memori (misal server streamlit sempat restart), coba load dari disk
@@ -684,12 +734,8 @@ class JobManager:
                     file_name=data.get("file_name", f"{stem}"),
                     input_path=Path(data.get("input_path", "")),
                     output_dir=Path(data.get("output_dir", target_dir)),
-                    out_file=Path(
-                        data.get("out_file", target_dir / f"{stem}.md")
-                    ),
-                    db_file=Path(data["db_file"])
-                    if data.get("db_file")
-                    else None,
+                    out_file=Path(data.get("out_file", target_dir / f"{stem}.md")),
+                    db_file=Path(data["db_file"]) if data.get("db_file") else None,
                     log_path=Path(data.get("log_path", latest_log)),
                     latest_log_path=latest_log,
                     status_file=status_file,
@@ -700,6 +746,7 @@ class JobManager:
                         )
                     ),
                     status=data.get("status", "failed"),
+                    queue_position=int(data.get("queue_position", 0)),
                     current_page=data.get("current_page", 0),
                     total_pages=data.get("total_pages", 0),
                     stage=data.get("stage", "Tidak diketahui"),
@@ -708,20 +755,42 @@ class JobManager:
                     updated_at=data.get("updated_at", ""),
                     pid=data.get("pid"),
                     returncode=data.get("returncode"),
-                    error_message=data.get("error_message"),
+                error_message=data.get("error_message"),
+                    completed_at=data.get("completed_at"),
                     run_id=data.get("run_id", uuid.uuid4().hex),
                     extraction_options=data.get("extraction_options", {}),
                     recent_logs=recent,
                 )
 
-                # Job antrean tidak memiliki worker setelah server Streamlit dimuat ulang.
-                if job.status == "queued":
+                checkpoint_exists = self._checkpoint_path(job).exists()
+                # Job antrean atau gagal dengan checkpoint dapat dilanjutkan setelah restart.
+                if job.status in {"queued", "failed"} and checkpoint_exists:
+                    job.status = "queued"
+                    job.pid = None
+                    job.returncode = None
+                    job.stage = "Checkpoint ditemukan, menyiapkan resume..."
+                    job.last_message = (
+                        "Layanan sebelumnya berhenti; ekstraksi akan dilanjutkan."
+                    )
+                    job.save_status()
+                # Job antrean tanpa checkpoint memang belum memiliki worker lagi.
+                elif job.status == "queued":
                     self._recover_abandoned_queue(job)
                 # Validasi jika status tersimpan "running" tapi PID sudah mati.
                 elif job.status == "running" and (
                     job.pid is None or not is_pid_alive(job.pid)
                 ):
-                    self._recover_terminated_job(job)
+                    if checkpoint_exists:
+                        job.status = "queued"
+                        job.pid = None
+                        job.returncode = None
+                        job.stage = "Checkpoint ditemukan, menyiapkan resume..."
+                        job.last_message = (
+                            "Layanan sebelumnya berhenti; ekstraksi akan dilanjutkan."
+                        )
+                        job.save_status()
+                    else:
+                        self._recover_terminated_job(job)
 
                 with self._lock:
                     self._jobs[stem] = job
@@ -773,6 +842,9 @@ class JobManager:
         # Matikan proses sistem operasi
         if proc and proc.poll() is None:
             try:
+                # SIGTERM tidak diproses oleh proses yang sedang SIGSTOP.
+                if job.status == "paused" and sys.platform != "win32":
+                    os.kill(proc.pid, signal.SIGCONT)
                 # Di Windows, gunakan taskkill tree agar proses anak (soffice, python) ikut mati
                 if sys.platform == "win32" and job.pid:
                     subprocess.run(
@@ -792,19 +864,145 @@ class JobManager:
 
         return True
 
+    def pause_job(self, stem: str) -> bool:
+        """Jeda job antrean atau suspend subprocess yang sedang berjalan."""
+        with self._lock:
+            job = self.get_job(stem)
+            proc = self._processes.get(stem)
+        if not job or job.status not in {"queued", "running"}:
+            return False
+
+        if proc and proc.poll() is None:
+            try:
+                if sys.platform == "win32":
+                    import psutil
+
+                    psutil.Process(proc.pid).suspend()
+                else:
+                    os.kill(proc.pid, signal.SIGSTOP)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Gagal menjeda proses %s: %s", stem, exc)
+                return False
+
+            # Slot harus dibuka agar job lain dapat langsung mengambil alih.
+            with self._lock:
+                slot_path = self._execution_slots.pop(stem, None)
+            self._release_execution_slot(slot_path, job.run_id)
+
+        with self._lock:
+            job.status = "paused"
+            job.stage = "Dijeda oleh pengguna"
+            job.last_message = "Ekstraksi dijeda; tekan lanjutkan untuk meneruskan."
+            job.save_status()
+        return True
+
+    def resume_job(self, stem: str, output_dir: Path) -> bool:
+        """Lanjutkan job yang dijeda, baik dari antrean maupun subprocess suspend."""
+        job = self.get_job(stem, output_dir=output_dir)
+        if not job or job.status != "paused":
+            return False
+        proc = self._processes.get(stem)
+        if proc and proc.poll() is None:
+            with self._lock:
+                job.status = "queued"
+                job.stage = "Menunggu slot untuk melanjutkan..."
+                job.last_message = "Menunggu slot kosong untuk melanjutkan ekstraksi."
+                job.save_status()
+            threading.Thread(
+                target=self._resume_suspended_process,
+                args=(job, proc),
+                daemon=True,
+                name=f"Resume-{job.job_id}",
+            ).start()
+            return True
+
+        with self._lock:
+            job.status = "queued"
+            job.stage = "Menunggu slot ekstraksi VLM..."
+            job.last_message = "Job kembali ke antrean ekstraksi."
+            job.save_status()
+            worker = self._threads.get(job.job_id)
+            if worker is None or not worker.is_alive():
+                self._launch_job(job, resume=self._checkpoint_path(job).exists())
+        return True
+
+    def _resume_suspended_process(self, job: JobInfo, proc: subprocess.Popen) -> None:
+        """Ambil kembali slot lalu lepaskan suspend pada subprocess yang dijeda."""
+        slot_path = self._acquire_execution_slot(job)
+        if slot_path is None:
+            return
+        try:
+            if proc.poll() is not None:
+                self._release_execution_slot(slot_path, job.run_id)
+                return
+            if sys.platform == "win32":
+                import psutil
+
+                psutil.Process(proc.pid).resume()
+            else:
+                os.kill(proc.pid, signal.SIGCONT)
+            with self._lock:
+                self._execution_slots[job.job_id] = slot_path
+                job.status = "running"
+                job.stage = "Proses dilanjutkan"
+                job.last_message = "Ekstraksi dilanjutkan oleh pengguna."
+                job.save_status()
+            self._write_slot_owner(slot_path, job, subprocess_pid=proc.pid)
+        except Exception as exc:  # noqa: BLE001
+            self._release_execution_slot(slot_path, job.run_id)
+            with self._lock:
+                job.status = "failed"
+                job.error_message = f"Gagal melanjutkan proses: {exc}"
+                job.last_message = job.error_message
+                job.save_status()
+
+    def prioritize_job(self, stem: str, output_dir: Path | None = None) -> bool:
+        """Pindahkan job yang masih dalam antrean ke urutan terdepan."""
+        with self._lock:
+            job = self.get_job(stem, output_dir=output_dir)
+            if not job or job.status != "queued":
+                return False
+            min_pos = min(
+                (
+                    other.queue_position
+                    for other in self._jobs.values()
+                    if other.status in {"queued", "running"}
+                ),
+                default=0,
+            )
+            job.queue_position = min_pos - 1
+            job.stage = "Diprioritaskan ke antrean terdepan"
+            job.last_message = "File ini diprioritaskan oleh pengguna untuk diproses berikutnya."
+            job.save_status()
+            return True
+
     def restart_job(self, stem: str, output_dir: Path) -> JobInfo:
         """Mulai ulang langsung, dengan sumber dan opsi proses sebelumnya."""
         job = self.get_job(stem, output_dir=output_dir)
         if job and job.status == "running":
             return job
+        if job and job.status == "queued" and self._checkpoint_path(job).exists():
+            with self._lock:
+                worker = self._threads.get(job.job_id)
+                if worker is None or not worker.is_alive():
+                    self._launch_job(job, resume=True)
+            return job
         source = job.input_path if job else None
         if source is None or not source.is_file():
             uploads = output_dir / "uploads"
-            matches = [p for p in uploads.iterdir() if p.is_file() and p.stem == stem] if uploads.exists() else []
+            matches = (
+                [p for p in uploads.iterdir() if p.is_file() and p.stem == stem]
+                if uploads.exists()
+                else []
+            )
             if len(matches) != 1:
-                raise FileNotFoundError(f"Sumber dokumen '{stem}' tidak tersedia atau ambigu. Unggah ulang file sumber.")
+                raise FileNotFoundError(
+                    f"Sumber dokumen '{stem}' tidak tersedia atau ambigu. Unggah ulang file sumber."
+                )
             source = matches[0]
-        return self.start_job(source, output_dir, **(job.extraction_options if job else {}))
+        return self.start_job(
+            source, output_dir, **(job.extraction_options if job else {})
+        )
 
     def reset_job(self, stem: str, output_dir: Path | None = None) -> None:
         """Hapus referensi job dari memori dan bersihkan file status agar dapat diekstrak ulang."""
@@ -838,18 +1036,29 @@ class JobManager:
                 if job.output_dir.resolve() != output_dir.resolve():
                     continue
                 seen_stems.add(stem)
-                docs.append({
-                    "stem": stem,
-                    "status": job.status,
-                    "stage": job.stage,
-                    "page_count": job.total_pages or job.current_page or 0,
-                    "mtime": job.status_file.stat().st_mtime if job.status_file.exists() else 0.0,
-                })
+                docs.append(
+                    {
+                        "stem": stem,
+                        "status": job.status,
+                        "stage": job.stage,
+                        "page_count": job.total_pages or job.current_page or 0,
+                        "mtime": job.status_file.stat().st_mtime
+                        if job.status_file.exists()
+                        else 0.0,
+                    }
+                )
 
         # 2. Dari direktori output di disk
         if output_dir.exists():
             for item in output_dir.iterdir():
-                if not item.is_dir() or item.name in ("logs", "databases", "csv", "uploads", "cache", "batches"):
+                if not item.is_dir() or item.name in (
+                    "logs",
+                    "databases",
+                    "csv",
+                    "uploads",
+                    "cache",
+                    "batches",
+                ):
                     continue
                 stem = item.name
                 if stem in seen_stems:
@@ -858,7 +1067,11 @@ class JobManager:
                 md_file = item / f"{stem}.md"
                 db_file = item / "databases" / f"{stem}.sqlite"
                 status_file = item / "logs" / f"{stem}_status.json"
-                if not md_file.exists() and not db_file.exists() and not status_file.exists():
+                if (
+                    not md_file.exists()
+                    and not db_file.exists()
+                    and not status_file.exists()
+                ):
                     continue
 
                 seen_stems.add(stem)
@@ -866,35 +1079,50 @@ class JobManager:
                 pages_dir = item / "pages"
                 slides_dir = item / "slides"
                 if pages_dir.exists():
-                    page_count = len(list(pages_dir.glob("*.png")) + list(pages_dir.glob("*.jpg")))
+                    page_count = len(
+                        list(pages_dir.glob("*.png")) + list(pages_dir.glob("*.jpg"))
+                    )
                 elif slides_dir.exists():
-                    page_count = len(list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg")))
+                    page_count = len(
+                        list(slides_dir.glob("*.png")) + list(slides_dir.glob("*.jpg"))
+                    )
 
-                mtime = max(path.stat().st_mtime for path in (item, md_file, status_file) if path.exists())
+                mtime = max(
+                    path.stat().st_mtime
+                    for path in (item, md_file, status_file)
+                    if path.exists()
+                )
                 job = self.get_job(stem, output_dir=output_dir)
                 status = job.status if job else "completed"
                 stage = job.stage if job else "Selesai"
 
-                docs.append({
-                    "stem": stem,
-                    "status": status,
-                    "stage": stage,
-                    "page_count": page_count,
-                    "mtime": mtime,
-                })
+                docs.append(
+                    {
+                        "stem": stem,
+                        "status": status,
+                        "stage": stage,
+                        "page_count": page_count,
+                        "mtime": mtime,
+                    }
+                )
 
-        docs.sort(key=lambda d: (d["status"] in {"queued", "running"}, d["mtime"]), reverse=True)
+        docs.sort(
+            key=lambda d: (d["status"] in {"queued", "running"}, d["mtime"]),
+            reverse=True,
+        )
         return docs
 
     def get_active_job_counts(self, output_dir: Path) -> dict[str, int]:
-        """Hitung job ingest aktif yang berjalan atau menunggu slot VLM."""
+        """Hitung job ingest aktif, termasuk job yang sedang dijeda."""
         documents = self.list_all_documents(output_dir)
         running = sum(document["status"] == "running" for document in documents)
         queued = sum(document["status"] == "queued" for document in documents)
+        paused = sum(document["status"] == "paused" for document in documents)
         return {
             "running": running,
             "queued": queued,
-            "active": running + queued,
+            "paused": paused,
+            "active": running + queued + paused,
         }
 
     def get_latest_logs(self, stem: str, line_count: int = 40) -> str:

@@ -93,9 +93,20 @@ class TestOCRGrounding(unittest.TestCase):
             ocr_llm = MagicMock()
             ocr_llm.invoke.return_value = ocr_response
 
+            inspect_response = MagicMock(
+                content=json.dumps(
+                    {
+                        "specs": ["plain"],
+                        "has_diagram": False,
+                        "has_table": False,
+                        "difficulty": "simple",
+                        "requires_vlm_reading": False,
+                    }
+                )
+            )
             judge_response = MagicMock(content="# Judul\n\nIsi final tervalidasi.")
             main_llm = MagicMock()
-            main_llm.invoke.return_value = judge_response
+            main_llm.invoke.side_effect = [inspect_response, judge_response]
 
             pipeline = DocumentExtractionPipeline(
                 Settings(ocr_model="unlimited-ocr"),
@@ -111,7 +122,52 @@ class TestOCRGrounding(unittest.TestCase):
             self.assertEqual(result.ocr_status, "corrected_by_vlm")
             self.assertEqual(result.markdown_content, judge_response.content)
             self.assertEqual(ocr_llm.invoke.call_count, 1)
-            self.assertEqual(main_llm.invoke.call_count, 1)
+            self.assertEqual(main_llm.invoke.call_count, 2)
+
+    def test_small_text_visual_rescue_uses_vlm_even_when_ocr_is_trusted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "small_text.png"
+            image = Image.new("RGB", (256, 128), "white")
+            ImageDraw.Draw(image).rectangle((20, 50, 230, 65), fill="black")
+            image.save(image_path)
+
+            ocr_llm = MagicMock()
+            ocr_llm.invoke.return_value = MagicMock(
+                content=(
+                    "<|det|>text [50, 100, 900, 850]<|/det|>"
+                    "Draft OCR yang dipercaya tetapi bukan sumber final."
+                )
+            )
+            main_llm = MagicMock()
+            main_llm.invoke.side_effect = [
+                MagicMock(
+                    content=json.dumps(
+                        {
+                            "specs": ["plain"],
+                            "has_diagram": False,
+                            "has_table": False,
+                            "difficulty": "complex",
+                            "requires_vlm_reading": True,
+                            "reasoning": "Font sangat kecil dan teks miring.",
+                        }
+                    )
+                ),
+                MagicMock(content="# Dibaca VLM\n\nTeks kecil dan miring terbaca."),
+                MagicMock(content="# Dibaca VLM\n\nTeks kecil dan miring final."),
+            ]
+            pipeline = DocumentExtractionPipeline(
+                Settings(ocr_model="unlimited-ocr"),
+                vlm=main_llm,
+                ocr_llm=ocr_llm,
+            )
+
+            result = pipeline.run(str(image_path), forced_specs="plain")
+
+            self.assertEqual(result.ocr_status, "vlm_visual_rescue")
+            self.assertTrue(result.vlm_visual_rescue)
+            self.assertIn("final", result.markdown_content)
+            self.assertEqual(ocr_llm.invoke.call_count, 1)
+            self.assertEqual(main_llm.invoke.call_count, 3)
 
     def test_blank_page_skips_ocr_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -195,6 +251,17 @@ class TestOCRGrounding(unittest.TestCase):
             )
             main_llm = MagicMock()
             main_llm.invoke.side_effect = [
+                MagicMock(
+                    content=json.dumps(
+                        {
+                            "specs": ["plain"],
+                            "has_diagram": False,
+                            "has_table": False,
+                            "difficulty": "simple",
+                            "requires_vlm_reading": False,
+                        }
+                    )
+                ),
                 MagicMock(content="# END OF DOCUMENT"),
                 MagicMock(content="# END OF DOCUMENT\n\nBaliTower Metro Ethernet"),
             ]
@@ -214,7 +281,7 @@ class TestOCRGrounding(unittest.TestCase):
             self.assertIn("END OF DOCUMENT", result.markdown_content)
             self.assertIn("native_text_mismatch", result.ocr_risk_flags)
             self.assertEqual(ocr_llm.invoke.call_count, 1)
-            self.assertEqual(main_llm.invoke.call_count, 2)
+            self.assertEqual(main_llm.invoke.call_count, 3)
 
     def test_right_angle_rotation_swaps_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
