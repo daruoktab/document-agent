@@ -1,0 +1,26 @@
+app/graph.py
+  s_88fb85b229490a::t_e605d2a924218d 265
+  s_88fb85b229490a::t_30030b7825e3b4 266-268
+app/diagram.py
+  s_88fb85b229490a::t_d628e1a087f0f0 428-434,436-443
+app/ocr.py
+  s_88fb85b229490a::t_fab47175f6b1e5 91
+  s_88fb85b229490a::t_3f224de4ae80bc 88-90
+  s_88fb85b229490a::t_9f3dce1d59a7ea 92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "969248e77d677e35a5756ac0f92034a084a59ef7",
+  "prompts": {},
+  "sessions": {
+    "s_88fb85b229490a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f526606a4ffenourl3spLwygTu",
+        "model": "unknown"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
