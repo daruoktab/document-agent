@@ -836,7 +836,7 @@ class JobManager:
             job = self._jobs.get(stem)
             proc = self._processes.get(stem)
 
-        if not job or job.status not in {"queued", "running"}:
+        if not job or job.status not in {"queued", "running", "paused"}:
             return False
 
         # Matikan proses sistem operasi
@@ -853,6 +853,11 @@ class JobManager:
                         check=False,
                     )
                 proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Gagal mematikan proses: %s", e)
 

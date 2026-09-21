@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 from app.job_tracker import JobManager
 from app.streamlit_logic import _save_uploaded_files, build_batch_zip
-from app.upload_batches import create_batch, list_batches
+from app.upload_batches import create_batch, delete_batch, delete_document_from_batch, list_batches
 
 
 class UploadedFileStub:
@@ -28,10 +28,22 @@ class TestUploadBatches(unittest.TestCase):
             root = Path(directory)
             first = UploadedFileStub("report.pdf", b"one")
             second = UploadedFileStub("report.pdf", b"two")
-            same = UploadedFileStub("report.pdf", b"one")
+            repeated = UploadedFileStub("report.pdf", b"one")
             self.assertEqual(_save_uploaded_files([first], root)[0].name, "report.pdf")
             self.assertEqual(_save_uploaded_files([second], root)[0].name, "report (1).pdf")
-            self.assertEqual(_save_uploaded_files([same], root)[0].name, "report.pdf")
+            self.assertEqual(_save_uploaded_files([repeated], root)[0].name, "report (2).pdf")
+
+    def test_identical_files_in_one_upload_are_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = _save_uploaded_files(
+                [
+                    UploadedFileStub("report.pdf", b"same"),
+                    UploadedFileStub("nested/report.pdf", b"same"),
+                ],
+                root,
+            )
+            self.assertEqual([path.name for path in paths], ["report.pdf"])
 
     def test_same_batch_name_gets_ordinal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -94,6 +106,38 @@ class TestUploadBatches(unittest.TestCase):
             bad.mkdir()
             (bad / "manifest.json").write_text("invalid json")
             self.assertEqual(list_batches(root), [batch])
+
+    def test_delete_batch_removes_results_but_keeps_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "uploads" / "report.pdf"
+            source.parent.mkdir()
+            source.write_bytes(b"source")
+            result_dir = root / "report"
+            result_dir.mkdir()
+            (result_dir / "report.md").write_text("result")
+            batch = create_batch(root, "Batch", [{"stem": "report", "source_name": "report.pdf"}])
+
+            delete_batch(root, batch["id"])
+
+            self.assertTrue(source.exists())
+            self.assertFalse(result_dir.exists())
+            self.assertEqual(list_batches(root), [])
+
+    def test_delete_document_keeps_other_batch_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_dir = root / "report"
+            result_dir.mkdir()
+            (result_dir / "report.md").write_text("result")
+            first = create_batch(root, "First", [{"stem": "report", "source_name": "report.pdf"}])
+            second = create_batch(root, "Second", [{"stem": "report", "source_name": "report.pdf"}])
+
+            delete_document_from_batch(root, first["id"], "report")
+
+            self.assertTrue(result_dir.exists())
+            self.assertEqual(len(list_batches(root)), 1)
+            self.assertEqual(list_batches(root)[0]["id"], second["id"])
 
     def test_batch_rejects_path_traversal(self):
         with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
