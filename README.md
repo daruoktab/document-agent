@@ -19,7 +19,7 @@ Lihat [panduan pembelajaran dan perintah admin](docs/PEMBELAJARAN.md).
 ### 1. Persyaratan Sistem (Prerequisites)
 - **Python**: `>= 3.12` (disarankan menggunakan Conda/venv dan manajer paket `uv`).
 - **Node.js & npm**: `>= 18` (diperlukan untuk engine compiler rendering Mermaid CLI lokal).
-- **LibreOffice**: Diperlukan jika memproses file presentasi PowerPoint (`.ppt`/`.pptx`) via mode headless.
+- **LibreOffice**: Diperlukan untuk render PowerPoint serta survei, kalkulasi ulang, dan render region Excel/ODS via mode headless.
 - **Dua endpoint OpenAI-compatible**: server Vision LLM utama dan server Unlimited-OCR/DeepSeek-OCR-aware llama.cpp pada port berbeda.
 
 ### 2. Langkah Instalasi (Step-by-Step)
@@ -64,9 +64,17 @@ OCR_MEDIUM_TRUST_SCORE=0.48
 OCR_ROTATION_RETRY=true
 OCR_BLANK_INK_RATIO=0.0002
 OCR_SPARSE_INK_RATIO=0.015
+
+EXCEL_NATIVE_SURVEY=true
+EXCEL_REGION_RENDERING=true
+EXCEL_BASE_DPI=300
+EXCEL_MAX_DPI=450
+EXCEL_SMALL_FONT_POINTS=8
 ```
 
 Ketika `OCR_MODEL` diisi, OCR menjadi sumber draft Markdown utama hanya setelah lolos quality gate. Pipeline mengoreksi orientasi, membandingkan hasil dengan text-layer PDF bila tersedia, mencoba rotasi alternatif pada kandidat berisiko, dan memakai ekstraksi VLM independen saat trust OCR rendah. Dengan `VLM_VISUAL_RESCUE=true`, VLM juga mengambil alih pembacaan halaman berfont sangat kecil/padat, teks miring penting, anotasi teknis kecil, multi-kolom rapat, atau kontras rendah—meski OCR lolos trust tinggi. Grounding `table` dan `figure` dipotong ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman untuk masa setup karena mengaktifkan fallback VLM.
+
+Untuk Excel, pipeline menyurvei nilai sel, formula, merge, style, dan blok tabel sebelum rendering. Tabel berdampingan dirender sebagai region terpisah pada DPI adaptif; font kecil atau teks miring memicu pembacaan VLM utama. Nilai native disimpan bersama provenance sel ke SQLite/CSV dan menjadi bukti angka saat ekstraksi serta judge.
 
 ---
 

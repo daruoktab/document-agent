@@ -261,6 +261,9 @@ def process_multipage_pdf(
     output_markdown_path: str | Path | None = None,
     source_file_for_records: str | Path | None = None,
     resume: bool = False,
+    native_text_by_page_override: dict[int, str] | None = None,
+    dpi_by_page_override: dict[int, int] | None = None,
+    force_vlm_reading_by_page_override: dict[int, bool] | None = None,
 ) -> ExtractedDocument:
     """
     Proses seluruh halaman PDF dan gabungkan hasil ekstraksi menjadi teks Markdown utuh siap chunking.
@@ -281,6 +284,8 @@ def process_multipage_pdf(
     )
     total_pages = pdf_page_count(pdf_path)
     native_text_by_page = extract_pdf_native_text_by_page(pdf_path)
+    if native_text_by_page_override:
+        native_text_by_page.update(native_text_by_page_override)
 
     if pipeline is None:
         from .graph import DocumentExtractionPipeline
@@ -447,12 +452,28 @@ def process_multipage_pdf(
         ]
         if not pending_page_numbers:
             continue
-        page_images = pdf_to_images(
-            pdf_path,
-            output_dir=pages_render_dir,
-            dpi=dpi,
-            pages=[page_number - 1 for page_number in pending_page_numbers],
-        )
+        if dpi_by_page_override:
+            image_by_page: dict[int, Path] = {}
+            pages_by_dpi: dict[int, list[int]] = {}
+            for page_number in pending_page_numbers:
+                page_dpi = max(72, int(dpi_by_page_override.get(page_number, dpi)))
+                pages_by_dpi.setdefault(page_dpi, []).append(page_number)
+            for page_dpi, page_numbers in pages_by_dpi.items():
+                rendered = pdf_to_images(
+                    pdf_path,
+                    output_dir=pages_render_dir,
+                    dpi=page_dpi,
+                    pages=[page_number - 1 for page_number in page_numbers],
+                )
+                image_by_page.update(zip(page_numbers, rendered, strict=True))
+            page_images = [image_by_page[page_number] for page_number in pending_page_numbers]
+        else:
+            page_images = pdf_to_images(
+                pdf_path,
+                output_dir=pages_render_dir,
+                dpi=dpi,
+                pages=[page_number - 1 for page_number in pending_page_numbers],
+            )
 
         for idx, img_path in zip(pending_page_numbers, page_images, strict=True):
             logger.info(
@@ -473,6 +494,9 @@ def process_multipage_pdf(
                     pages_render_dir.parent / "regions" / f"page_{idx:04d}"
                 ),
                 native_text=native_text_by_page.get(idx),
+                force_vlm_reading=(force_vlm_reading_by_page_override or {}).get(
+                    idx, False
+                ),
             )
 
             from .tabular_db import sanitize_markdown_tables

@@ -975,6 +975,60 @@ class DualTrackGuardrailReport(BaseModel):
     )
 
 
+class ExcelCellEvidence(BaseModel):
+    """Nilai dan metadata satu sel sumber yang dapat diaudit."""
+
+    coordinate: str
+    row: int = Field(..., ge=1)
+    column: int = Field(..., ge=1)
+    value: Any = None
+    formula: str | None = None
+    number_format: str = "General"
+    data_type: str = "n"
+    merged_range: str | None = None
+    font_size: float | None = None
+    text_rotation: int = 0
+
+
+class ExcelRegion(BaseModel):
+    """Satu blok logis pada worksheet yang dirender dan diekstrak mandiri."""
+
+    region_id: str
+    sheet_name: str
+    sheet_index: int = Field(..., ge=0)
+    cell_range: str
+    min_row: int = Field(..., ge=1)
+    max_row: int = Field(..., ge=1)
+    min_column: int = Field(..., ge=1)
+    max_column: int = Field(..., ge=1)
+    title: str | None = None
+    period: str | None = None
+    kind: Literal["table", "text", "mixed"] = "mixed"
+    render_dpi: int = Field(default=300, ge=72)
+    requires_vlm_reading: bool = False
+    native_text: str = ""
+    cells: list[ExcelCellEvidence] = Field(default_factory=list)
+
+
+class ExcelSheetSurvey(BaseModel):
+    """Inventaris sheet dan region yang ditemukan sebelum rendering visual."""
+
+    name: str
+    index: int = Field(..., ge=0)
+    visible: bool = True
+    used_range: str | None = None
+    regions: list[ExcelRegion] = Field(default_factory=list)
+
+
+class ExcelWorkbookSurvey(BaseModel):
+    """Manifest struktur workbook yang menyertai hasil ekstraksi visual."""
+
+    source_file: str
+    workbook_format: str
+    sheets: list[ExcelSheetSurvey] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ExtractedDocument(BaseModel):
     """Hasil akhir dokumen lengkap dengan metadata hierarki, database tabular, & diagram Mermaid."""
 
@@ -1019,6 +1073,14 @@ class ExtractedDocument(BaseModel):
     total_tables: int = Field(
         default=0,
         description="Total tabel GFM terdeteksi di seluruh dokumen",
+    )
+    excel_workbook: ExcelWorkbookSurvey | None = Field(
+        default=None,
+        description="Manifest sheet, region, dan bukti sel untuk sumber spreadsheet",
+    )
+    excel_native_tables: list[str] = Field(
+        default_factory=list,
+        description="Nama tabel SQLite yang dibuat langsung dari nilai sel spreadsheet",
     )
 
     @property

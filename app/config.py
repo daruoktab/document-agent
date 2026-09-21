@@ -151,6 +151,29 @@ class Settings:
         default_factory=lambda: _bool_env("VLM_VISUAL_RESCUE", "true")
     )
 
+    # --- Spreadsheet hybrid extraction ---
+    excel_native_survey: bool = field(
+        default_factory=lambda: _bool_env("EXCEL_NATIVE_SURVEY", "true")
+    )
+    excel_region_rendering: bool = field(
+        default_factory=lambda: _bool_env("EXCEL_REGION_RENDERING", "true")
+    )
+    excel_base_dpi: int = field(
+        default_factory=lambda: _int_env("EXCEL_BASE_DPI", "300")
+    )
+    excel_max_dpi: int = field(
+        default_factory=lambda: _int_env("EXCEL_MAX_DPI", "450")
+    )
+    excel_small_font_points: float = field(
+        default_factory=lambda: _float_env("EXCEL_SMALL_FONT_POINTS", "8")
+    )
+    excel_max_region_columns: int = field(
+        default_factory=lambda: _int_env("EXCEL_MAX_REGION_COLUMNS", "18")
+    )
+    excel_max_region_rows: int = field(
+        default_factory=lambda: _int_env("EXCEL_MAX_REGION_ROWS", "80")
+    )
+
     # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
     ocr_model: str = field(default_factory=lambda: _optional_env("OCR_MODEL"))
     ocr_base_url: str = field(

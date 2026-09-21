@@ -55,6 +55,7 @@ class DocumentExtractionState(TypedDict, total=False):
     native_text: str | None
     inspection_rotation_degrees: int
     requires_vlm_reading: bool
+    force_vlm_reading: bool
     ocr_force_judge: bool
     ocr_result: dict[str, Any]
     ocr_status: str
@@ -214,6 +215,7 @@ class DocumentExtractionPipeline:
         page_number: int | None = None,
         region_output_dir: str | Path | None = None,
         native_text: str | None = None,
+        force_vlm_reading: bool = False,
     ) -> PipelinePageResult:
         """
         Jalankan pipeline ekstraksi lengkap pada satu gambar halaman dokumen.
@@ -230,6 +232,7 @@ class DocumentExtractionPipeline:
             "page_number": page_number,
             "region_output_dir": str(region_output_dir) if region_output_dir else None,
             "native_text": native_text,
+            "force_vlm_reading": force_vlm_reading,
         }
 
         logger.info("[Pipeline] Memulai ekstraksi: %s (is_first_page=%s)", image_path, is_first_page)
@@ -335,9 +338,9 @@ class DocumentExtractionPipeline:
         has_tbl = bool(insp_res.get("has_table", False))
         difficulty = str(insp_res.get("difficulty", "standard"))
         doc_title = getattr(insp_res, "document_title", None) or insp_res.get("document_title")
-        requires_vlm_reading = bool(insp_res.requires_vlm_reading) and bool(
-            self.settings.vlm_visual_rescue
-        )
+        requires_vlm_reading = bool(
+            insp_res.requires_vlm_reading or state.get("force_vlm_reading", False)
+        ) and bool(self.settings.vlm_visual_rescue)
 
         if doc_title:
             logger.info("[Pipeline:Classify] Judul dokumen terdeteksi: '%s'", doc_title)
@@ -463,6 +466,7 @@ class DocumentExtractionPipeline:
                 img,
                 llm=self.vlm,
                 previous_page_context=prev_context,
+                native_text=state.get("native_text"),
             )
             if state.get("requires_vlm_reading", False):
                 ocr_status = "vlm_visual_rescue"
@@ -660,6 +664,7 @@ class DocumentExtractionPipeline:
             draft_markdown=combined_md,
             specs=specs,
             previous_page_context=state.get("previous_page_context"),
+            native_text=state.get("native_text"),
         )
 
         # 4. Guardrail Pasca-Judge: Sanitasi tabel & validasi ulang blok Mermaid

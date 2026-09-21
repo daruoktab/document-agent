@@ -26,6 +26,11 @@ class TestOCRSettings(unittest.TestCase):
         self.assertEqual(settings.ocr_min_trust_score, 0.72)
         self.assertEqual(settings.ocr_medium_trust_score, 0.48)
         self.assertTrue(settings.ocr_rotation_retry)
+        self.assertTrue(settings.excel_native_survey)
+        self.assertTrue(settings.excel_region_rendering)
+        self.assertEqual(settings.excel_base_dpi, 300)
+        self.assertEqual(settings.excel_max_dpi, 450)
+        self.assertEqual(settings.excel_small_font_points, 8.0)
         self.assertTrue(settings.vlm_visual_rescue)
 
     def test_ocr_endpoint_and_model_are_independent_from_vlm(self) -> None:
