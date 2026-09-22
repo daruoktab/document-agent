@@ -1,0 +1,21 @@
+llama-server.service
+  s_7308d0443dd71a::t_f81a4505d331d1 9-11
+streamlit.service
+  s_7308d0443dd71a::t_f81a4505d331d1 9,11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6ecc1a89b0cfc8d8217d512263ce51f4326ea7d0",
+  "prompts": {},
+  "sessions": {
+    "s_7308d0443dd71a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f39177305ffeE2NCQsllFiBs9q",
+        "model": "unknown"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
