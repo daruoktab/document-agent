@@ -1,6 +1,6 @@
 """
 Harness Deep Reasoning Agent (Autonomous Orchestrator) untuk ekstraksi dokumen
-internal perusahaan: Vision VLM -> Markdown Terstruktur, SQLite tabular,
+internal perusahaan: OCR primer + Vision VLM -> Markdown Terstruktur, SQLite tabular,
 transkrip chat, form tanda tangan, & diagram Mermaid.js.
 
 Berbeda dengan `app/agents.py` (profil prompt deterministik), file ini membangun
@@ -34,6 +34,7 @@ from .diagram import (
 from .docx import process_multipage_docx
 from .excel import process_multipage_excel
 from .extractor import VisionExtractor
+from .graph import DocumentExtractionPipeline
 from .llm import build_vlm
 from .multi_page import preview_markdown_chunks
 from .pdf import process_multipage_pdf
@@ -57,9 +58,9 @@ def build_deep_agent(
     output_markdown_path: str | Path | None = None,
 ) -> Any:
     """
-    Bangun Deep Reasoning Agent utama dengan armada 6 Sub-Agent spesialis (Pure VLM):
+    Bangun Deep Reasoning Agent utama dengan armada Sub-Agent spesialis dua-model:
       1. `layout-classifier`          : Mengklasifikasikan multi-trait dokumen
-      2. `markdown-extractor`         : Ekstraksi VLM multimodal ke Markdown
+      2. `ocr-markdown-extractor`     : Ekstraksi OCR primer ke Markdown
       3. `diagram-mermaid-specialist` : Evaluasi selektif & ekstraksi diagram ke sintaks Mermaid.js
       4. `presentation-specialist`    : Parsing file presentasi PowerPoint (.pptx / .ppt)
       5. `pdf-orchestrator`           : Orkestrasi multi-halaman PDF & heading continuity
@@ -74,6 +75,7 @@ def build_deep_agent(
     resolved_settings = settings or get_settings()
     vlm = build_vlm(resolved_settings)
     extractor = VisionExtractor(vlm)
+    pipeline = DocumentExtractionPipeline(resolved_settings, vlm=vlm)
 
     default_db_path = str(db_path) if db_path else None
     default_out_path = str(output_markdown_path) if output_markdown_path else None
@@ -93,8 +95,29 @@ def build_deep_agent(
         specs: str = "plain",
         previous_context: str | None = None,
     ) -> str:
-        """Ekstrak gambar dokumen menjadi teks Markdown bersih sesuai satu atau kombinasi spesifikasi (mis. 'journal,hierarchy', 'presentation_slides', 'chat_transcript,signature_form')."""
+        """Ekstrak gambar menjadi Markdown dengan model OCR primer; otomatis fallback ke VLM utama bila OCR belum aktif atau gagal."""
         proc = preprocess_image(image_path)
+        if pipeline.ocr_extractor is not None:
+            source = Path(image_path)
+            region_root = (
+                Path(default_out_path).resolve().parent
+                if default_out_path
+                else Path("output") / source.stem
+            )
+            ocr_result = pipeline.ocr_extractor.extract_robust(
+                proc.processed_path,
+                output_dir=region_root / "regions" / "deep_agent",
+            )
+            if (
+                ocr_result.status == "success"
+                and ocr_result.trust_level == "high"
+                and ocr_result.decision != "blank_page"
+                and ocr_result.markdown.strip()
+            ):
+                return ocr_result.markdown
+            if ocr_result.decision == "blank_page":
+                return ""
+
         agent = get_agent(specs)
         return agent.run(
             proc.processed_path,
@@ -134,7 +157,7 @@ def build_deep_agent(
         """Ekstrak dokumen presentasi PowerPoint (.pptx/.ppt) dengan merender tiap slide menjadi gambar kanvas visual lalu dianalisis oleh VLM. Output streaming per-slide ke file Markdown target."""
         res = process_presentation_vision(
             pptx_path,
-            llm=vlm,
+            pipeline=pipeline,
             db_path=default_db_path,
             output_markdown_path=default_out_path,
         )
@@ -148,7 +171,7 @@ def build_deep_agent(
         """Ekstrak dokumen PDF multi-halaman dengan heading continuity, ekstraksi tabel mandiri per-halaman ke SQLite, dan audit guardrail jalur ganda. Output streaming per-halaman ke file Markdown target."""
         res = process_multipage_pdf(
             pdf_path,
-            llm=vlm,
+            pipeline=pipeline,
             forced_specs=forced_specs,
             auto_tabular_db=True,
             db_path=default_db_path,
@@ -164,7 +187,7 @@ def build_deep_agent(
         """Ekstrak dokumen DOCX/DOC dengan mengonversinya ke PDF, merender tiap halaman menjadi gambar, lalu menjalankan pipeline VLM dan SQLite yang sama seperti PDF."""
         res = process_multipage_docx(
             docx_path,
-            llm=vlm,
+            pipeline=pipeline,
             forced_specs=forced_specs,
             auto_tabular_db=True,
             db_path=default_db_path,
@@ -180,7 +203,7 @@ def build_deep_agent(
         """Ekstrak workbook Excel/ODS dengan mengonversinya ke PDF, merender tiap halaman menjadi gambar, lalu menjalankan pipeline VLM dan SQLite yang sama seperti PDF."""
         res = process_multipage_excel(
             excel_path,
-            llm=vlm,
+            pipeline=pipeline,
             forced_specs=forced_specs,
             auto_tabular_db=True,
             db_path=default_db_path,
@@ -305,11 +328,13 @@ def build_deep_agent(
             tools=[classify_layout],
         ),
         SubAgent(
-            name="markdown-extractor",
-            description="Sub-agent untuk mengekstrak citra halaman dokumen menjadi teks Markdown bersih siap chunking.",
+            name="ocr-markdown-extractor",
+            description="Sub-agent OCR primer untuk mengekstrak halaman menjadi Markdown dan region visual/tabel.",
             system_prompt=(
-                "Anda adalah Sub-Agent Spesialis Ekstraksi Markdown untuk dokumen internal perusahaan. "
-                "Tugas Anda: Ubah citra dokumen menjadi teks Markdown bersih dan terstruktur. "
+                "Anda adalah Sub-Agent OCR Spesialis Ekstraksi Markdown untuk dokumen internal perusahaan. "
+                "Gunakan tool 'extract_to_markdown'; model OCR adalah sumber draft primer dan VLM utama "
+                "hanya menjadi fallback bila OCR belum dikonfigurasi atau gagal. "
+                "Ubah citra dokumen menjadi teks Markdown bersih dan terstruktur. "
                 "Pertahankan hierarki heading, list, transkrip percakapan chat, tabel form persetujuan, "
                 "dan konteks antar-halaman. "
                 "Spesifikasi yang mungkin aktif: plain, markdown_hierarchy, bilingual_journal, "
@@ -389,13 +414,13 @@ def build_deep_agent(
 
     master_system_prompt = (
         "Anda adalah Master Orchestrator Deep Reasoning Agent untuk Sistem Ekstraksi Dokumen Internal Perusahaan "
-        "(Vision VLM -> Markdown Terstruktur, Tabular SQLite, & Mermaid).\n\n"
+        "(OCR Primer + Vision VLM -> Markdown Terstruktur, Tabular SQLite, & Mermaid).\n\n"
         "Karakteristik dokumen yang mungkin ditemui: surat/memo/pengumuman (plain), SOP/SK/kebijakan (markdown_hierarchy), "
         "artikel internal multi-kolom (bilingual_journal), slide presentasi (presentation_slides), "
         "screenshot chat (chat_transcript), form tanda tangan/paraf (signature_form).\n\n"
         "Anda mengorkestrasi 8 Sub-Agent spesialis:\n"
         "  - 'layout-classifier'         : Menentukan tipe dokumen & karakteristik komposit.\n"
-        "  - 'markdown-extractor'        : Mengonversi halaman menjadi Markdown bersih.\n"
+        "  - 'ocr-markdown-extractor'    : Mengonversi halaman menjadi draft Markdown via OCR primer.\n"
         "  - 'diagram-mermaid-specialist': Menangani diagram alur/relasi/topologi visual menjadi sintaks Mermaid.js.\n"
         "  - 'presentation-specialist'   : Menangani slide PPT/PPTX visual.\n"
         "  - 'pdf-orchestrator'          : Mengelola multi-halaman PDF dengan heading continuity.\n"
@@ -406,7 +431,8 @@ def build_deep_agent(
         f"{MARKDOWN_LINE_BREAK_RULES}\n\n"
         f"{MERMAID_EXTRACTION_RULES}\n\n"
         "1. Identifikasi format dokumen masukan (PDF, DOCX/DOC, Excel, PPTX, gambar tunggal).\n"
-        "2. Delegasikan tugas ke sub-agent yang relevan. Contoh: 'diagram-mermaid-specialist' jika ada diagram/topologi, "
+        "2. Gunakan 'ocr-markdown-extractor' sebagai sumber draft teks utama, lalu delegasikan tugas lanjutan. "
+        "Contoh: 'diagram-mermaid-specialist' jika ada diagram/topologi, "
         "'tabular-db-specialist' jika ada tabel data transaksional.\n"
         "3. Gabungkan hasil ekstraksi teks dengan blok Mermaid dan tabel.\n"
         "4. Lakukan tahap Judge / Koreksi Ulang ('judge_and_refine_markdown') untuk memverifikasi bahwa "

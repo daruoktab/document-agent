@@ -5,8 +5,9 @@ Menggunakan Pydantic-like dataclass `Settings` yang membaca environment variable
 dengan fallback yang aman untuk local inference (LM Studio / Ollama / llama-server).
 
 Peran Model:
-  1. VLM (Vision LLM): Model multimodal utama untuk interpretasi visual dan ekstraksi Markdown
-  2. Logging Config  : Konfigurasi level logging
+  1. VLM utama: klasifikasi, reasoning visual, specialist, dan quality gate
+  2. OCR       : ekstraksi Markdown dasar, grounding, dan region crop
+  3. Logging   : konfigurasi level logging
 """
 
 from __future__ import annotations
@@ -28,13 +29,18 @@ def _env(name: str, default: str) -> str:
     return val if val else default
 
 
-def _env_or(primary: str, fallback: str, default: str) -> str:
-    """Ambil `primary` env var; jika kosong coba `fallback`; jika kosong pakai `default`."""
-    val = os.environ.get(primary, "").strip()
-    if val:
-        return val
-    val = os.environ.get(fallback, "").strip()
-    return val if val else default
+def _env_first(names: tuple[str, ...], default: str) -> str:
+    """Ambil nilai pertama yang tidak kosong dari beberapa nama env."""
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return default
+
+
+def _optional_env(name: str) -> str:
+    """Ambil env opsional; string kosong berarti fitur belum dikonfigurasi."""
+    return os.environ.get(name, "").strip()
 
 
 def _float_env(name: str, default: str) -> float:
@@ -93,23 +99,43 @@ _load_local_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
-    """Pengaturan konfigurasi LLM, VLM, dan logging."""
+    """Pengaturan konfigurasi LLM, VLM, OCR, dan logging."""
 
-    # --- Global Fallback ---
-    llm_base_url: str = field(
-        default_factory=lambda: _env("LLM_BASE_URL", "http://localhost:1234/v1")
+    # --- Endpoint server llama.cpp ---
+    base_url: str = field(
+        default_factory=lambda: _env_first(
+            ("BASE_URL", "LLM_BASE_URL"), "http://127.0.0.1:8080/v1"
+        )
     )
-    llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "lm-studio"))
 
-    # --- 1. VLM Normal (Ekstraksi Markdown + Layout Classifier) ---
-    vlm_model: str = field(default_factory=lambda: _env("VLM_MODEL", "qwen-35b-vision"))
+    # Alias lama dipertahankan untuk kompatibilitas caller.
+    llm_base_url: str = field(
+        default_factory=lambda: _env_first(
+            ("BASE_URL", "LLM_BASE_URL"), "http://127.0.0.1:8080/v1"
+        )
+    )
+    llm_api_key: str = field(
+        default_factory=lambda: _env_first(
+            ("API_KEY", "LLM_API_KEY"), "not-needed"
+        )
+    )
+
+    # --- 1. VLM utama (reasoning + agent + quality gate) ---
+    vlm_model: str = field(
+        default_factory=lambda: _env(
+            "VLM_MODEL", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
+        )
+    )
     vlm_base_url: str = field(
-        default_factory=lambda: _env_or(
-            "VLM_BASE_URL", "LLM_BASE_URL", "http://localhost:1234/v1"
+        default_factory=lambda: _env_first(
+            ("VLM_BASE_URL", "BASE_URL", "LLM_BASE_URL"),
+            "http://127.0.0.1:8080/v1",
         )
     )
     vlm_api_key: str = field(
-        default_factory=lambda: _env_or("VLM_API_KEY", "LLM_API_KEY", "lm-studio")
+        default_factory=lambda: _env_first(
+            ("VLM_API_KEY", "API_KEY", "LLM_API_KEY"), "not-needed"
+        )
     )
     vlm_temperature: float = field(
         default_factory=lambda: _float_env("VLM_TEMPERATURE", "0.1")
@@ -121,8 +147,78 @@ class Settings:
     vlm_enable_thinking: bool = field(
         default_factory=lambda: _bool_env("VLM_ENABLE_THINKING", "false")
     )
+    vlm_visual_rescue: bool = field(
+        default_factory=lambda: _bool_env("VLM_VISUAL_RESCUE", "true")
+    )
 
-    # --- 2. Logging Configuration ---
+    # --- Spreadsheet hybrid extraction ---
+    excel_native_survey: bool = field(
+        default_factory=lambda: _bool_env("EXCEL_NATIVE_SURVEY", "true")
+    )
+    excel_region_rendering: bool = field(
+        default_factory=lambda: _bool_env("EXCEL_REGION_RENDERING", "true")
+    )
+    excel_base_dpi: int = field(
+        default_factory=lambda: _int_env("EXCEL_BASE_DPI", "300")
+    )
+    excel_max_dpi: int = field(
+        default_factory=lambda: _int_env("EXCEL_MAX_DPI", "450")
+    )
+    excel_small_font_points: float = field(
+        default_factory=lambda: _float_env("EXCEL_SMALL_FONT_POINTS", "8")
+    )
+    excel_max_region_columns: int = field(
+        default_factory=lambda: _int_env("EXCEL_MAX_REGION_COLUMNS", "18")
+    )
+    excel_max_region_rows: int = field(
+        default_factory=lambda: _int_env("EXCEL_MAX_REGION_ROWS", "80")
+    )
+
+    # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
+    ocr_model: str = field(default_factory=lambda: _optional_env("OCR_MODEL"))
+    ocr_base_url: str = field(
+        default_factory=lambda: _env("OCR_BASE_URL", "http://127.0.0.1:8081/v1")
+    )
+    ocr_api_key: str = field(
+        default_factory=lambda: _env_first(
+            ("OCR_API_KEY", "API_KEY", "LLM_API_KEY"), "not-needed"
+        )
+    )
+    ocr_temperature: float = field(
+        default_factory=lambda: _float_env("OCR_TEMPERATURE", "0.0")
+    )
+    ocr_timeout: float = field(default_factory=lambda: _float_env("OCR_TIMEOUT", "300"))
+    ocr_max_tokens: int = field(
+        default_factory=lambda: _int_env("OCR_MAX_TOKENS", "4096")
+    )
+    ocr_prompt: str = field(
+        default_factory=lambda: _env(
+            "OCR_PROMPT", "<|grounding|>Convert the document to markdown."
+        )
+    )
+    ocr_coordinate_size: int = field(
+        default_factory=lambda: _int_env("OCR_COORDINATE_SIZE", "1024")
+    )
+    ocr_crop_padding: float = field(
+        default_factory=lambda: _float_env("OCR_CROP_PADDING", "0.01")
+    )
+    ocr_min_trust_score: float = field(
+        default_factory=lambda: _float_env("OCR_MIN_TRUST_SCORE", "0.72")
+    )
+    ocr_medium_trust_score: float = field(
+        default_factory=lambda: _float_env("OCR_MEDIUM_TRUST_SCORE", "0.48")
+    )
+    ocr_rotation_retry: bool = field(
+        default_factory=lambda: _bool_env("OCR_ROTATION_RETRY", "true")
+    )
+    ocr_blank_ink_ratio: float = field(
+        default_factory=lambda: _float_env("OCR_BLANK_INK_RATIO", "0.0002")
+    )
+    ocr_sparse_ink_ratio: float = field(
+        default_factory=lambda: _float_env("OCR_SPARSE_INK_RATIO", "0.015")
+    )
+
+    # --- 3. Logging Configuration ---
     log_level: str = field(
         default_factory=lambda: _env("LOG_LEVEL", "INFO").strip().upper() or "INFO"
     )

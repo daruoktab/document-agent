@@ -282,7 +282,13 @@ def batch_extract_documents(
                 md_content = extracted.markdown_content
             # 5. Gambar
             else:
-                res = pipeline.run(str(doc_file), forced_specs=active_specs)
+                res = pipeline.run(
+                    str(doc_file),
+                    forced_specs=active_specs,
+                    is_first_page=True,
+                    page_number=1,
+                    region_output_dir=doc_dir / "regions" / "page_0001",
+                )
                 md_content = str(res["markdown_content"])
 
             out_file.write_text(md_content, encoding="utf-8")

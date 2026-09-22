@@ -57,6 +57,14 @@ class PageInspectionResult(BaseModel):
     document_title: str | None = Field(
         default=None, description="Judul utama dokumen jika terdeteksi (terutama di halaman 1)"
     )
+    rotation_degrees: Literal[0, 90, 180, 270] = Field(
+        default=0,
+        description="Rotasi searah jarum jam yang diperlukan agar halaman tegak",
+    )
+    requires_vlm_reading: bool = Field(
+        default=False,
+        description="True bila VLM utama perlu mengekstrak halaman secara independen karena teks atau layout sulit dibaca",
+    )
 
     def __getitem__(self, key: str) -> Any:
         """Kompatibilitas backward untuk akses dict: insp_res['specs']."""
@@ -65,6 +73,61 @@ class PageInspectionResult(BaseModel):
     def get(self, key: str, default: Any = None) -> Any:
         """Kompatibilitas backward untuk get dict: insp_res.get('has_diagram')."""
         return getattr(self, key, default)
+
+
+class OCRRegion(BaseModel):
+    """Satu region grounding hasil OCR yang sudah dipetakan ke piksel sumber."""
+
+    index: int = Field(..., ge=1)
+    label: str = Field(default="unknown")
+    kind: Literal["text", "table", "figure", "unknown"] = Field(default="unknown")
+    text: str = Field(default="")
+    bbox_model: tuple[float, float, float, float]
+    bbox_pixels: tuple[int, int, int, int]
+    crop_path: str | None = None
+
+
+class OCRQualityAssessment(BaseModel):
+    """Sinyal kualitas OCR yang dapat diaudit sebelum hasilnya dipercaya."""
+
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    trust_level: Literal["high", "medium", "low"] = Field(default="low")
+    risk_flags: list[str] = Field(default_factory=list)
+    ink_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    horizontal_energy: float = Field(default=0.0, ge=0.0)
+    vertical_energy: float = Field(default=0.0, ge=0.0)
+    native_text_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    is_blank: bool = False
+    is_sparse: bool = False
+    right_angle_suspected: bool = False
+
+
+class OCRExtractionResult(BaseModel):
+    """Hasil OCR halaman, termasuk Markdown bersih dan region grounding."""
+
+    status: Literal["success", "disabled", "error"] = Field(default="success")
+    markdown: str = Field(default="")
+    raw_response: str = Field(default="")
+    model: str = Field(default="")
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    regions: list[OCRRegion] = Field(default_factory=list)
+    manifest_path: str | None = None
+    error: str | None = None
+    decision: Literal[
+        "accepted",
+        "retried_rotated",
+        "low_trust",
+        "blank_page",
+        "error",
+        "disabled",
+    ] = Field(default="accepted")
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    trust_level: Literal["high", "medium", "low"] = Field(default="low")
+    risk_flags: list[str] = Field(default_factory=list)
+    rotation_degrees: Literal[0, 90, 180, 270] = 0
+    oriented_image_path: str | None = None
+    native_text_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+    candidate_scores: dict[str, float] = Field(default_factory=dict)
 
 
 class JudgeAuditDecision(BaseModel):
@@ -131,6 +194,32 @@ class PipelinePageResult(BaseModel):
     )
     document_title: str | None = Field(
         default=None, description="Judul utama dokumen jika terdeteksi"
+    )
+    ocr_status: Literal[
+        "accepted",
+        "retried_rotated",
+        "corrected_by_vlm",
+        "fallback_vlm",
+        "vlm_visual_rescue",
+        "blank_page",
+        "success",
+        "disabled",
+        "fallback",
+        "error",
+    ] = Field(
+        default="disabled", description="Status pemakaian model OCR pada halaman"
+    )
+    ocr_model: str = Field(default="", description="Nama model OCR yang dipakai")
+    ocr_latency_ms: float = Field(default=0.0, ge=0.0)
+    ocr_regions: list[OCRRegion] = Field(default_factory=list)
+    region_manifest_path: str | None = None
+    ocr_quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    ocr_trust_level: Literal["high", "medium", "low"] = Field(default="low")
+    ocr_risk_flags: list[str] = Field(default_factory=list)
+    rotation_degrees: Literal[0, 90, 180, 270] = 0
+    vlm_visual_rescue: bool = Field(
+        default=False,
+        description="True bila VLM utama mengambil alih pembacaan halaman yang sulit secara visual",
     )
 
     def __getitem__(self, key: str) -> Any:
@@ -886,6 +975,60 @@ class DualTrackGuardrailReport(BaseModel):
     )
 
 
+class ExcelCellEvidence(BaseModel):
+    """Nilai dan metadata satu sel sumber yang dapat diaudit."""
+
+    coordinate: str
+    row: int = Field(..., ge=1)
+    column: int = Field(..., ge=1)
+    value: Any = None
+    formula: str | None = None
+    number_format: str = "General"
+    data_type: str = "n"
+    merged_range: str | None = None
+    font_size: float | None = None
+    text_rotation: int = 0
+
+
+class ExcelRegion(BaseModel):
+    """Satu blok logis pada worksheet yang dirender dan diekstrak mandiri."""
+
+    region_id: str
+    sheet_name: str
+    sheet_index: int = Field(..., ge=0)
+    cell_range: str
+    min_row: int = Field(..., ge=1)
+    max_row: int = Field(..., ge=1)
+    min_column: int = Field(..., ge=1)
+    max_column: int = Field(..., ge=1)
+    title: str | None = None
+    period: str | None = None
+    kind: Literal["table", "text", "mixed"] = "mixed"
+    render_dpi: int = Field(default=300, ge=72)
+    requires_vlm_reading: bool = False
+    native_text: str = ""
+    cells: list[ExcelCellEvidence] = Field(default_factory=list)
+
+
+class ExcelSheetSurvey(BaseModel):
+    """Inventaris sheet dan region yang ditemukan sebelum rendering visual."""
+
+    name: str
+    index: int = Field(..., ge=0)
+    visible: bool = True
+    used_range: str | None = None
+    regions: list[ExcelRegion] = Field(default_factory=list)
+
+
+class ExcelWorkbookSurvey(BaseModel):
+    """Manifest struktur workbook yang menyertai hasil ekstraksi visual."""
+
+    source_file: str
+    workbook_format: str
+    sheets: list[ExcelSheetSurvey] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ExtractedDocument(BaseModel):
     """Hasil akhir dokumen lengkap dengan metadata hierarki, database tabular, & diagram Mermaid."""
 
@@ -930,6 +1073,14 @@ class ExtractedDocument(BaseModel):
     total_tables: int = Field(
         default=0,
         description="Total tabel GFM terdeteksi di seluruh dokumen",
+    )
+    excel_workbook: ExcelWorkbookSurvey | None = Field(
+        default=None,
+        description="Manifest sheet, region, dan bukti sel untuk sumber spreadsheet",
+    )
+    excel_native_tables: list[str] = Field(
+        default_factory=list,
+        description="Nama tabel SQLite yang dibuat langsung dari nilai sel spreadsheet",
     )
 
     @property

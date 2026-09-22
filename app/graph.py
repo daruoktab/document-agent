@@ -3,7 +3,7 @@ Orkestrasi Pipeline Ekstraksi Dokumen VLM -> Markdown Siap Chunking dengan LangG
 Mendukung multi-spesifikasi komposit layout dokumen dengan logging transparan.
 
 Alur StateGraph:
-    START -> preprocess -> classify -> extract_markdown -> END
+    START -> preprocess -> inspect/orient -> OCR quality gate -> draft -> specialist -> judge -> END
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -20,11 +21,12 @@ from langgraph.graph.state import CompiledStateGraph
 from .agents import get_agent
 from .config import Settings, get_settings
 from .extractor import VisionExtractor
-from .llm import build_vlm
+from .llm import build_ocr, build_vlm
 from .multi_page import extract_document_title
-from .preprocess import preprocess_image
+from .ocr import UnlimitedOCRExtractor
+from .preprocess import preprocess_image, rotate_image_right_angle
 from .prompts import normalize_specs
-from .schemas import PipelinePageResult
+from .schemas import OCRExtractionResult, OCRRegion, PipelinePageResult
 
 logger = logging.getLogger("app.graph")
 
@@ -48,6 +50,18 @@ class DocumentExtractionState(TypedDict, total=False):
     diagram_summary: str | None
     document_title: str | None
     is_first_page: bool
+    page_number: int | None
+    region_output_dir: str | None
+    native_text: str | None
+    inspection_rotation_degrees: int
+    requires_vlm_reading: bool
+    force_vlm_reading: bool
+    ocr_force_judge: bool
+    ocr_result: dict[str, Any]
+    ocr_status: str
+    ocr_regions: list[dict[str, Any]]
+    diagram_mermaid_codes: list[str]
+    diagram_summaries: list[str]
     final_markdown: str
 
 
@@ -129,12 +143,40 @@ class DocumentExtractionPipeline:
         self,
         settings: Settings | None = None,
         vlm: BaseChatModel | Any | None = None,
+        ocr_llm: BaseChatModel | Any | None = None,
         *,
         thorough: bool = False,
     ) -> None:
         self.settings: Settings = settings or get_settings()
         self.vlm: BaseChatModel = vlm or build_vlm(self.settings)
         self.extractor = VisionExtractor(self.vlm)
+        self.ocr_extractor: UnlimitedOCRExtractor | None = None
+        if ocr_llm is not None:
+            self.ocr_extractor = UnlimitedOCRExtractor(
+                ocr_llm,
+                model_name=self.settings.ocr_model or "injected-ocr",
+                prompt=self.settings.ocr_prompt,
+                coordinate_size=self.settings.ocr_coordinate_size,
+                crop_padding=self.settings.ocr_crop_padding,
+                min_trust_score=self.settings.ocr_min_trust_score,
+                medium_trust_score=self.settings.ocr_medium_trust_score,
+                rotation_retry=self.settings.ocr_rotation_retry,
+                blank_ink_ratio=self.settings.ocr_blank_ink_ratio,
+                sparse_ink_ratio=self.settings.ocr_sparse_ink_ratio,
+            )
+        elif self.settings.ocr_model:
+            self.ocr_extractor = UnlimitedOCRExtractor(
+                build_ocr(self.settings),
+                model_name=self.settings.ocr_model,
+                prompt=self.settings.ocr_prompt,
+                coordinate_size=self.settings.ocr_coordinate_size,
+                crop_padding=self.settings.ocr_crop_padding,
+                min_trust_score=self.settings.ocr_min_trust_score,
+                medium_trust_score=self.settings.ocr_medium_trust_score,
+                rotation_retry=self.settings.ocr_rotation_retry,
+                blank_ink_ratio=self.settings.ocr_blank_ink_ratio,
+                sparse_ink_ratio=self.settings.ocr_sparse_ink_ratio,
+            )
         self.thorough: bool = thorough
         self.graph: CompiledStateGraph = self._build_graph()
 
@@ -144,6 +186,8 @@ class DocumentExtractionPipeline:
         # Node pipeline
         builder.add_node("preprocess", self._node_preprocess)
         builder.add_node("inspect_and_classify", self._node_inspect_and_classify)
+        builder.add_node("normalize_orientation", self._node_normalize_orientation)
+        builder.add_node("extract_ocr", self._node_extract_ocr)
         builder.add_node("extract_markdown", self._node_extract_markdown)
         builder.add_node("summon_diagram_specialist", self._node_summon_diagram_specialist)
         builder.add_node("aggregate_and_judge", self._node_aggregate_and_judge)
@@ -151,7 +195,9 @@ class DocumentExtractionPipeline:
         # Edges
         builder.add_edge(START, "preprocess")
         builder.add_edge("preprocess", "inspect_and_classify")
-        builder.add_edge("inspect_and_classify", "extract_markdown")
+        builder.add_edge("inspect_and_classify", "normalize_orientation")
+        builder.add_edge("normalize_orientation", "extract_ocr")
+        builder.add_edge("extract_ocr", "extract_markdown")
         builder.add_edge("extract_markdown", "summon_diagram_specialist")
         builder.add_edge("summon_diagram_specialist", "aggregate_and_judge")
         builder.add_edge("aggregate_and_judge", END)
@@ -166,6 +212,10 @@ class DocumentExtractionPipeline:
         forced_doc_type: str | None = None,
         previous_page_context: str | None = None,
         is_first_page: bool = False,
+        page_number: int | None = None,
+        region_output_dir: str | Path | None = None,
+        native_text: str | None = None,
+        force_vlm_reading: bool = False,
     ) -> PipelinePageResult:
         """
         Jalankan pipeline ekstraksi lengkap pada satu gambar halaman dokumen.
@@ -179,12 +229,22 @@ class DocumentExtractionPipeline:
             "forced_doc_type": forced_doc_type,
             "previous_page_context": previous_page_context,
             "is_first_page": is_first_page,
+            "page_number": page_number,
+            "region_output_dir": str(region_output_dir) if region_output_dir else None,
+            "native_text": native_text,
+            "force_vlm_reading": force_vlm_reading,
         }
 
         logger.info("[Pipeline] Memulai ekstraksi: %s (is_first_page=%s)", image_path, is_first_page)
         final_state = cast(dict[str, Any], self.graph.invoke(initial_state))
 
         final_md = final_state.get("markdown_content", "")
+        ocr_payload = OCRExtractionResult.model_validate(
+            final_state.get(
+                "ocr_result",
+                {"status": "disabled", "model": self.settings.ocr_model},
+            )
+        )
         diff_val = str(final_state.get("difficulty", "standard")).lower()
         clean_difficulty: Literal["simple", "standard", "complex"] = (
             diff_val if diff_val in ("simple", "standard", "complex") else "standard"
@@ -197,9 +257,30 @@ class DocumentExtractionPipeline:
             has_diagram=final_state.get("has_diagram", False),
             diagram_mermaid_code=final_state.get("diagram_mermaid_code"),
             difficulty=clean_difficulty,
-            visual_count=count_visuals(final_md),
-            table_count=count_tables(final_md),
+            visual_count=max(
+                count_visuals(final_md),
+                sum(region.kind == "figure" for region in ocr_payload.regions),
+            ),
+            table_count=max(
+                count_tables(final_md),
+                sum(region.kind == "table" for region in ocr_payload.regions),
+            ),
             document_title=final_state.get("document_title"),
+            ocr_status=final_state.get("ocr_status", ocr_payload.status),
+            ocr_model=ocr_payload.model,
+            ocr_latency_ms=ocr_payload.latency_ms,
+            ocr_regions=ocr_payload.regions,
+            region_manifest_path=ocr_payload.manifest_path,
+            ocr_quality_score=ocr_payload.quality_score,
+            ocr_trust_level=ocr_payload.trust_level,
+            ocr_risk_flags=ocr_payload.risk_flags,
+            rotation_degrees=cast(
+                Any,
+                final_state.get("inspection_rotation_degrees", 0)
+                if ocr_payload.decision == "blank_page"
+                else ocr_payload.rotation_degrees,
+            ),
+            vlm_visual_rescue=bool(final_state.get("requires_vlm_reading", False)),
         )
 
     # =========================================================================
@@ -234,61 +315,54 @@ class DocumentExtractionPipeline:
     def _node_inspect_and_classify(
         self, state: DocumentExtractionState
     ) -> DocumentExtractionState:
-        """Tahap 2: Inspeksi multimodal karakteristik dokumen & deteksi elemen visual/diagram."""
+        """Tahap 3: VLM mengklasifikasikan layout dan kompleksitas halaman."""
         forced_specs = state.get("forced_specs")
         forced_doc_type = state.get("forced_doc_type")
         img = state.get("preprocessed_path") or state["image_path"]
-
-        # Jika spesifikasi dipaksa secara manual oleh user
-        if forced_specs:
-            norm_specs = normalize_specs(forced_specs)
-            logger.info("[Pipeline:Classify] Menggunakan forced_specs: %s", norm_specs)
-            return {
-                **state,
-                "specs": norm_specs,
-                "doc_type": ",".join(norm_specs),
-                # Diagram dideteksi post-extraction via output indicators (fast-path),
-                # bukan diasumsikan ada hanya karena spec = presentation_slides.
-                "has_diagram": False,
-                "diagram_type": None,
-                "difficulty": "standard",
-            }
-
-        if forced_doc_type:
-            norm_specs = normalize_specs(forced_doc_type)
-            logger.info("[Pipeline:Classify] Menggunakan forced_doc_type: %s", norm_specs)
-            return {
-                **state,
-                "specs": norm_specs,
-                "doc_type": ",".join(norm_specs),
-                "has_diagram": False,
-                "diagram_type": None,
-                "difficulty": "standard",
-            }
-
-        # Inspeksi otomatis via VLM
+        # Tetap inspeksi visual meski layout dipaksa: keputusan user menentukan
+        # spesifikasi, sementara VLM menentukan orientasi dan apakah teks kecil
+        # perlu dibaca ulang secara independen.
         t0 = time.perf_counter()
         is_first = bool(state.get("is_first_page", False))
         insp_res = self.extractor.inspect_page(img, is_first_page=is_first)
         elapsed = (time.perf_counter() - t0) * 1000
 
-        detected_specs = insp_res.get("specs", ["plain"])
+        forced_layout = forced_specs or forced_doc_type
+        detected_specs = (
+            normalize_specs(forced_layout)
+            if forced_layout
+            else insp_res.get("specs", ["plain"])
+        )
         has_diag = bool(insp_res.get("has_diagram", False))
         diag_type = insp_res.get("diagram_type")
         has_tbl = bool(insp_res.get("has_table", False))
         difficulty = str(insp_res.get("difficulty", "standard"))
         doc_title = getattr(insp_res, "document_title", None) or insp_res.get("document_title")
+        requires_vlm_reading = bool(
+            insp_res.requires_vlm_reading or state.get("force_vlm_reading", False)
+        ) and bool(self.settings.vlm_visual_rescue)
 
         if doc_title:
             logger.info("[Pipeline:Classify] Judul dokumen terdeteksi: '%s'", doc_title)
+        if forced_layout:
+            logger.info(
+                "[Pipeline:Classify] Menggunakan layout paksa: %s; inspeksi visual tetap aktif.",
+                detected_specs,
+            )
+        if requires_vlm_reading:
+            logger.info(
+                "[Pipeline:Classify] VLM visual rescue aktif: %s",
+                insp_res.reasoning or "teks/layout perlu pembacaan presisi",
+            )
 
         logger.info(
-            "[Pipeline:Classify] Layout: %s | Diagram: %s (%s) | Tabel: %s | Difficulty: %s%s (%.1fms)",
+            "[Pipeline:Classify] Layout: %s | Diagram: %s (%s) | Tabel: %s | Difficulty: %s | VLM rescue: %s%s (%.1fms)",
             detected_specs,
             has_diag,
             diag_type,
             has_tbl,
             difficulty,
+            requires_vlm_reading,
             f" | Judul: '{doc_title}'" if doc_title else "",
             elapsed,
         )
@@ -302,27 +376,109 @@ class DocumentExtractionPipeline:
             "has_table": has_tbl,
             "difficulty": difficulty,
             "document_title": doc_title or state.get("document_title"),
+            "inspection_rotation_degrees": insp_res.rotation_degrees,
+            "requires_vlm_reading": requires_vlm_reading,
+        }
+
+    def _node_normalize_orientation(
+        self, state: DocumentExtractionState
+    ) -> DocumentExtractionState:
+        """Putar halaman berdasarkan inspeksi VLM sebelum dibaca oleh OCR."""
+        rotation = int(state.get("inspection_rotation_degrees", 0))
+        if rotation not in (90, 180, 270):
+            return state
+        img = state.get("preprocessed_path") or state["image_path"]
+        oriented = rotate_image_right_angle(
+            img,
+            rotation,
+        )
+        logger.info("[Pipeline:Orientation] Halaman diputar %d derajat CW", rotation)
+        return {**state, "preprocessed_path": oriented}
+
+    def _node_extract_ocr(
+        self, state: DocumentExtractionState
+    ) -> DocumentExtractionState:
+        """OCR primer dengan quality gate; hasil meragukan tidak langsung dipercaya."""
+        if self.ocr_extractor is None:
+            result = OCRExtractionResult(
+                status="disabled",
+                decision="disabled",
+                model=self.settings.ocr_model,
+                error="OCR_MODEL belum dikonfigurasi.",
+            )
+            logger.info("[Pipeline:OCR] OCR belum dikonfigurasi; siapkan fallback VLM utama")
+        else:
+            img = state.get("preprocessed_path") or state["image_path"]
+            result = self.ocr_extractor.extract_robust(
+                img,
+                output_dir=state.get("region_output_dir"),
+                native_text=state.get("native_text"),
+            )
+
+        inspection_rotation = int(state.get("inspection_rotation_degrees", 0))
+        result.rotation_degrees = cast(
+            Any, (inspection_rotation + result.rotation_degrees) % 360
+        )
+        if result.oriented_image_path:
+            oriented_path = result.oriented_image_path
+        else:
+            oriented_path = state.get("preprocessed_path") or state["image_path"]
+        ocr_has_figure = any(region.kind == "figure" for region in result.regions)
+        ocr_has_table = any(region.kind == "table" for region in result.regions)
+        return {
+            **state,
+            "preprocessed_path": oriented_path,
+            "has_diagram": bool(state.get("has_diagram")) or ocr_has_figure,
+            "has_table": bool(state.get("has_table")) or ocr_has_table,
+            "ocr_result": result.model_dump(),
+            "ocr_status": result.decision,
+            "ocr_regions": [region.model_dump() for region in result.regions],
         }
 
     def _node_extract_markdown(
         self, state: DocumentExtractionState
     ) -> DocumentExtractionState:
-        """Tahap 3: Ekstraksi teks & tata letak Markdown menggunakan Composite Agent."""
+        """Tahap 4: pakai draft OCR; fallback ke VLM utama bila OCR tidak tersedia/gagal."""
         t0 = time.perf_counter()
         img = state.get("preprocessed_path") or state["image_path"]
         specs = state.get("specs", ["plain"])
         prev_context = state.get("previous_page_context")
-
-        agent = get_agent(specs)
-        md_text = agent.run(
-            img,
-            llm=self.vlm,
-            previous_page_context=prev_context,
+        ocr_result = OCRExtractionResult.model_validate(
+            state.get("ocr_result", {"status": "disabled"})
         )
+
+        if ocr_result.decision == "blank_page":
+            md_text = ""
+            ocr_status = "blank_page"
+            source = "blank-page gate"
+        elif (
+            ocr_result.status == "success"
+            and ocr_result.trust_level == "high"
+            and ocr_result.markdown.strip()
+            and not state.get("requires_vlm_reading", False)
+        ):
+            md_text = ocr_result.markdown
+            ocr_status = ocr_result.decision
+            source = f"OCR ({ocr_result.model})"
+        else:
+            agent = get_agent(specs)
+            md_text = agent.run(
+                img,
+                llm=self.vlm,
+                previous_page_context=prev_context,
+                native_text=state.get("native_text"),
+            )
+            if state.get("requires_vlm_reading", False):
+                ocr_status = "vlm_visual_rescue"
+                source = "VLM utama independen (visual rescue teks/layout sulit)"
+            else:
+                ocr_status = "fallback_vlm"
+                source = "VLM utama independen (OCR tidak dipercaya/tersedia)"
 
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info(
-            "[Pipeline:ExtractMarkdown] Ekstraksi teks selesai (%d karakter, %.1fms)",
+            "[Pipeline:ExtractMarkdown] Draft dari %s selesai (%d karakter, %.1fms)",
+            source,
             len(md_text),
             elapsed,
         )
@@ -339,16 +495,26 @@ class DocumentExtractionPipeline:
             **state,
             "markdown_content": md_text,
             "document_title": current_title,
+            "ocr_status": ocr_status,
+            "ocr_force_judge": ocr_status != "blank_page",
         }
 
     def _node_summon_diagram_specialist(
         self, state: DocumentExtractionState
     ) -> DocumentExtractionState:
-        """Tahap 4: Summon Sub-Agent Spesialis Diagram Mermaid HANYA jika diagram terdeteksi."""
+        """Tahap 5: kirim crop figure OCR ke spesialis Mermaid VLM utama."""
         has_diag = state.get("has_diagram", False)
         specs = state.get("specs", [])
         md_content = state.get("markdown_content", "")
-        img = state.get("preprocessed_path") or state["image_path"]
+        if state.get("ocr_status") == "blank_page":
+            return state
+        full_image = state.get("preprocessed_path") or state["image_path"]
+        ocr_regions = [OCRRegion.model_validate(item) for item in state.get("ocr_regions", [])]
+        figure_crops = [
+            region.crop_path
+            for region in ocr_regions
+            if region.kind == "figure" and region.crop_path
+        ]
 
         # Deteksi diagram dari output ekstraksi (0 biaya VLM).
         # Prompt presentation_slides menginstruksikan VLM menulis
@@ -367,25 +533,34 @@ class DocumentExtractionPipeline:
             return state
 
         t0 = time.perf_counter()
-        logger.info("[Pipeline:SummonSpecialist] Men-summon Sub-Agent Diagram Mermaid...")
+        targets = figure_crops or [full_image]
+        logger.info(
+            "[Pipeline:SummonSpecialist] Memproses %d target diagram%s...",
+            len(targets),
+            " hasil crop OCR" if figure_crops else " dari halaman penuh",
+        )
         diag_hint = state.get("diagram_type")
 
         from .diagram import extract_diagram_to_mermaid
 
-        diag_result = extract_diagram_to_mermaid(
-            image_path=img,
-            llm=self.vlm,
-            forced_diagram_type=diag_hint,
-        )
+        mermaid_codes: list[str] = []
+        diagram_summaries: list[str] = []
+        for target in targets:
+            diag_result = extract_diagram_to_mermaid(
+                image_path=target,
+                llm=self.vlm,
+                forced_diagram_type=diag_hint,
+            )
+            if diag_result.mermaid_code:
+                mermaid_codes.append(diag_result.mermaid_code)
+            if diag_result.text_summary:
+                diagram_summaries.append(diag_result.text_summary)
         elapsed = (time.perf_counter() - t0) * 1000
 
-        mermaid_code = diag_result.mermaid_code
-        diag_summary = diag_result.text_summary
-
-        if mermaid_code:
+        if mermaid_codes:
             logger.info(
-                "[Pipeline:SummonSpecialist] Berhasil mengekstrak Diagram Mermaid (%s, %.1fms)",
-                diag_result.diagram_type,
+                "[Pipeline:SummonSpecialist] Berhasil mengekstrak %d Diagram Mermaid (%.1fms)",
+                len(mermaid_codes),
                 elapsed,
             )
         else:
@@ -396,8 +571,10 @@ class DocumentExtractionPipeline:
 
         return {
             **state,
-            "diagram_mermaid_code": mermaid_code,
-            "diagram_summary": diag_summary,
+            "diagram_mermaid_code": mermaid_codes[0] if mermaid_codes else None,
+            "diagram_summary": diagram_summaries[0] if diagram_summaries else None,
+            "diagram_mermaid_codes": mermaid_codes,
+            "diagram_summaries": diagram_summaries,
         }
 
     def _node_aggregate_and_judge(
@@ -411,13 +588,22 @@ class DocumentExtractionPipeline:
         t0 = time.perf_counter()
         img = state.get("preprocessed_path") or state["image_path"]
         md_text = state.get("markdown_content", "")
-        mermaid_code = state.get("diagram_mermaid_code")
-        diag_summary = state.get("diagram_summary")
+        if state.get("ocr_status") == "blank_page":
+            return {
+                **state,
+                "difficulty": "simple",
+                "markdown_content": "",
+                "final_markdown": "",
+            }
+        mermaid_codes = state.get("diagram_mermaid_codes", [])
+        if not mermaid_codes and state.get("diagram_mermaid_code"):
+            mermaid_codes = [cast(str, state["diagram_mermaid_code"])]
+        diagram_summaries = state.get("diagram_summaries", [])
         specs = state.get("specs", ["plain"])
 
         # 1. Satukan blok diagram Mermaid ke Markdown jika belum ada
         combined_md = md_text
-        if mermaid_code:
+        for index, mermaid_code in enumerate(mermaid_codes):
             from .diagram import sanitize_mermaid_code, validate_mermaid_syntax
 
             # Ganti draft yang rusak dengan hasil spesialis yang sudah valid.
@@ -425,26 +611,41 @@ class DocumentExtractionPipeline:
             if specialist and validate_mermaid_syntax(specialist)[0]:
                 replaced = False
 
-                def recover_invalid(m: re.Match) -> str:
+                def recover_invalid(
+                    m: re.Match, replacement: str = specialist
+                ) -> str:
                     nonlocal replaced
                     draft_code = sanitize_mermaid_code(m.group(1))
                     if not replaced and (not draft_code or not validate_mermaid_syntax(draft_code)[0]):
                         replaced = True
-                        return f"```mermaid\n{specialist}\n```"
+                        return f"```mermaid\n{replacement}\n```"
                     return m.group(0)
 
-                combined_md = re.sub(r"```mermaid\s*([\s\S]*?)\s*```", recover_invalid, combined_md, flags=re.IGNORECASE)
-        if mermaid_code and "```mermaid" not in combined_md:
-            mermaid_block = f"\n\n```mermaid\n{mermaid_code}\n```"
-            if diag_summary:
-                mermaid_block += f"\n\n> **[Diagram Summary]:** {diag_summary}"
-            combined_md = combined_md + "\n" + mermaid_block
+                combined_md = re.sub(
+                    r"```mermaid\s*([\s\S]*?)\s*```",
+                    recover_invalid,
+                    combined_md,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            fenced = f"```mermaid\n{specialist or mermaid_code}\n```"
+            if fenced not in combined_md:
+                mermaid_block = f"\n\n{fenced}"
+                if index < len(diagram_summaries):
+                    mermaid_block += (
+                        f"\n\n> **[Diagram Summary]:** {diagram_summaries[index]}"
+                    )
+                combined_md += mermaid_block
 
         # 2. Fast-path: skip judge untuk halaman simple yang bersih
         difficulty = state.get("difficulty") or _assess_difficulty_from_output(md_text)
         has_diagram = state.get("has_diagram", False) or _has_diagram_indicators(md_text)
 
-        if not self.thorough and _should_skip_judge(combined_md, difficulty, has_diagram):
+        if (
+            not self.thorough
+            and not state.get("ocr_force_judge", False)
+            and _should_skip_judge(combined_md, difficulty, has_diagram)
+        ):
             logger.info(
                 "[Pipeline:AggregateJudge] Skip judge (fast mode: difficulty=%s, %d karakter bersih)",
                 difficulty,
@@ -462,6 +663,8 @@ class DocumentExtractionPipeline:
             image_path=img,
             draft_markdown=combined_md,
             specs=specs,
+            previous_page_context=state.get("previous_page_context"),
+            native_text=state.get("native_text"),
         )
 
         # 4. Guardrail Pasca-Judge: Sanitasi tabel & validasi ulang blok Mermaid
@@ -497,6 +700,13 @@ class DocumentExtractionPipeline:
             flags=re.IGNORECASE,
         )
 
+        final_status = state.get("ocr_status", "disabled")
+        if (
+            final_status in {"accepted", "retried_rotated"}
+            and final_md.strip() != combined_md.strip()
+        ):
+            final_status = "corrected_by_vlm"
+
         elapsed = (time.perf_counter() - t0) * 1000
 
         logger.info(
@@ -511,6 +721,7 @@ class DocumentExtractionPipeline:
             "difficulty": difficulty,
             "markdown_content": final_md,
             "final_markdown": final_md,
+            "ocr_status": final_status,
         }
 
 

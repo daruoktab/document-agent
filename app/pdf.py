@@ -68,6 +68,25 @@ def pdf_page_count(pdf_path: str | Path) -> int:
         ) from err
 
 
+def extract_pdf_native_text_by_page(pdf_path: str | Path) -> dict[int, str]:
+    """Ambil text-layer PDF per halaman sebagai bukti independen untuk quality gate OCR."""
+    path_obj = Path(pdf_path).resolve()
+    try:
+        import pymupdf
+
+        document = pymupdf.open(str(path_obj))
+        try:
+            return {
+                page_index + 1: document[page_index].get_text("text", sort=True).strip()
+                for page_index in range(len(document))
+            }
+        finally:
+            document.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Text-layer PDF tidak tersedia untuk quality gate OCR: %s", exc)
+        return {}
+
+
 def pdf_to_images(
     pdf_path: str | Path,
     output_dir: str | Path | None = None,
@@ -242,6 +261,9 @@ def process_multipage_pdf(
     output_markdown_path: str | Path | None = None,
     source_file_for_records: str | Path | None = None,
     resume: bool = False,
+    native_text_by_page_override: dict[int, str] | None = None,
+    dpi_by_page_override: dict[int, int] | None = None,
+    force_vlm_reading_by_page_override: dict[int, bool] | None = None,
 ) -> ExtractedDocument:
     """
     Proses seluruh halaman PDF dan gabungkan hasil ekstraksi menjadi teks Markdown utuh siap chunking.
@@ -261,6 +283,9 @@ def process_multipage_pdf(
         Path(source_file_for_records).name if source_file_for_records else pdf_path.name
     )
     total_pages = pdf_page_count(pdf_path)
+    native_text_by_page = extract_pdf_native_text_by_page(pdf_path)
+    if native_text_by_page_override:
+        native_text_by_page.update(native_text_by_page_override)
 
     if pipeline is None:
         from .graph import DocumentExtractionPipeline
@@ -303,10 +328,6 @@ def process_multipage_pdf(
     if resolved_db_path:
         resolved_db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    stream_file: Path | None = None
-    checkpoint_file: Path | None = None
-    checkpoint_pages: dict[int, dict[str, Any]] = {}
-
     # Tentukan folder output render gambar halaman PDF
     if output_dir:
         pages_render_dir: Path | None = Path(output_dir).resolve()
@@ -315,6 +336,9 @@ def process_multipage_pdf(
     else:
         pages_render_dir = Path("output") / pdf_path.stem / "pages"
 
+    stream_file: Path | None = None
+    checkpoint_file: Path | None = None
+    checkpoint_pages: dict[int, dict[str, Any]] = {}
     if output_markdown_path:
         stream_file = Path(output_markdown_path).resolve()
         stream_file.parent.mkdir(parents=True, exist_ok=True)
@@ -323,9 +347,7 @@ def process_multipage_pdf(
         )
         if resume and checkpoint_file.exists():
             try:
-                checkpoint_data = json.loads(
-                    checkpoint_file.read_text(encoding="utf-8")
-                )
+                checkpoint_data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
                 if (
                     checkpoint_data.get("source_file") == record_source
                     and checkpoint_data.get("total_pages") == total_pages
@@ -359,10 +381,7 @@ def process_multipage_pdf(
                         page_number=page_number,
                         specs=list(page_specs),
                         markdown_content=page_md,
-                        image_path=str(
-                            Path(pages_render_dir or stream_file.parent)
-                            / f"page_{page_number:04d}.png"
-                        ),
+                        image_path=str(pages_render_dir / f"page_{page_number:04d}.png"),
                     )
                 )
                 event_data = page_data.get("tabular_event")
@@ -370,12 +389,7 @@ def process_multipage_pdf(
                     tabular_events.append(PageTabularEvent.model_validate(event_data))
                 total_visuals += int(page_data.get("visual_count", 0))
                 total_tables += int(page_data.get("table_count", 0))
-                restored_pages.append(
-                    {
-                        "page_number": page_number,
-                        "content": page_md,
-                    }
-                )
+                restored_pages.append({"page_number": page_number, "content": page_md})
 
             previous_context = (
                 f"Konteks Dokumen: Judul: '{document_title}'. "
@@ -395,7 +409,6 @@ def process_multipage_pdf(
             stream_file.write_text("", encoding="utf-8")
         logger.info("Streaming output Markdown ke: %s", stream_file)
 
-    # Proses BERTAHAP per batch 10 halaman: render batch -> ekstrak batch -> lanjut.
     def save_checkpoint() -> None:
         if checkpoint_file is None:
             return
@@ -429,6 +442,7 @@ def process_multipage_pdf(
         )
         temporary.replace(checkpoint_file)
 
+    # Proses BERTAHAP per batch 10 halaman: render batch -> ekstrak batch -> lanjut.
     for b_start in range(0, total_pages, PDF_PAGE_BATCH):
         b_end = min(b_start + PDF_PAGE_BATCH, total_pages)
         pending_page_numbers = [
@@ -438,14 +452,30 @@ def process_multipage_pdf(
         ]
         if not pending_page_numbers:
             continue
-        page_images = pdf_to_images(
-            pdf_path,
-            output_dir=pages_render_dir,
-            dpi=dpi,
-            pages=[page_number - 1 for page_number in pending_page_numbers],
-        )
+        if dpi_by_page_override:
+            image_by_page: dict[int, Path] = {}
+            pages_by_dpi: dict[int, list[int]] = {}
+            for page_number in pending_page_numbers:
+                page_dpi = max(72, int(dpi_by_page_override.get(page_number, dpi)))
+                pages_by_dpi.setdefault(page_dpi, []).append(page_number)
+            for page_dpi, page_numbers in pages_by_dpi.items():
+                rendered = pdf_to_images(
+                    pdf_path,
+                    output_dir=pages_render_dir,
+                    dpi=page_dpi,
+                    pages=[page_number - 1 for page_number in page_numbers],
+                )
+                image_by_page.update(zip(page_numbers, rendered, strict=True))
+            page_images = [image_by_page[page_number] for page_number in pending_page_numbers]
+        else:
+            page_images = pdf_to_images(
+                pdf_path,
+                output_dir=pages_render_dir,
+                dpi=dpi,
+                pages=[page_number - 1 for page_number in pending_page_numbers],
+            )
 
-        for idx, img_path in zip(pending_page_numbers, page_images):
+        for idx, img_path in zip(pending_page_numbers, page_images, strict=True):
             logger.info(
                 "Memproses Halaman %d / %d dari '%s'...",
                 idx,
@@ -459,6 +489,14 @@ def process_multipage_pdf(
                 forced_specs=active_forced,
                 previous_page_context=previous_context,
                 is_first_page=(idx == 1),
+                page_number=idx,
+                region_output_dir=(
+                    pages_render_dir.parent / "regions" / f"page_{idx:04d}"
+                ),
+                native_text=native_text_by_page.get(idx),
+                force_vlm_reading=(force_vlm_reading_by_page_override or {}).get(
+                    idx, False
+                ),
             )
 
             from .tabular_db import sanitize_markdown_tables
@@ -589,7 +627,6 @@ def process_multipage_pdf(
 
     if stream_file:
         stream_file.write_text(full_md, encoding="utf-8")
-
     if checkpoint_file:
         checkpoint_file.unlink(missing_ok=True)
 

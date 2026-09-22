@@ -426,7 +426,13 @@ def main() -> int:
         elif ext in (".png", ".jpg", ".jpeg", ".webp"):
             logger.info("Mengekstrak gambar via Dual-Track Vision & Sub-Agent SQL...")
             pipeline = DocumentExtractionPipeline(settings, thorough=args.thorough)
-            result = pipeline.run(str(input_path), forced_specs=args.doc_type)
+            result = pipeline.run(
+                str(input_path),
+                forced_specs=args.doc_type,
+                is_first_page=True,
+                page_number=1,
+                region_output_dir=doc_output_dir / "regions" / "page_0001",
+            )
             markdown_content = result["markdown_content"]
 
             # Sub-Agent SQL mandiri pada gambar tunggal

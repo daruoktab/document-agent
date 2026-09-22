@@ -175,7 +175,9 @@ def _render_slides_native_pptx(
 
     # Buat sub-folder sementara untuk PDF perantara
     temp_pdf_dir = Path(tempfile.mkdtemp(prefix="pptx_render_"))
-    pdf_file = _convert_presentation_to_pdf(presentation_path, output_dir=temp_pdf_dir)
+    pdf_file = _convert_presentation_to_pdf(
+        presentation_path, output_dir=temp_pdf_dir
+    )
 
     if not pdf_file or not pdf_file.exists():
         raise RuntimeError(
@@ -293,15 +295,13 @@ def pptx_to_structured_text(
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
             notes_text = slide.notes_slide.notes_text_frame.text.strip()
 
-        slides_data.append(
-            {
-                "slide_number": idx,
-                "title": slide_title,
-                "paragraphs": paragraphs,
-                "tables": tables_extracted,
-                "notes": notes_text,
-            }
-        )
+        slides_data.append({
+            "slide_number": idx,
+            "title": slide_title,
+            "paragraphs": paragraphs,
+            "tables": tables_extracted,
+            "notes": notes_text,
+        })
 
     return slides_data
 
@@ -345,7 +345,9 @@ def process_presentation(
                 if len(t) >= 1:
                     headers = t[0]
                     lines.append("| " + " | ".join(headers) + " |")
-                    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                    lines.append(
+                        "| " + " | ".join(["---"] * len(headers)) + " |"
+                    )
                     for r in t[1:]:
                         lines.append("| " + " | ".join(r) + " |")
                     lines.append("")
@@ -457,7 +459,9 @@ def process_presentation_vision(
         dpi=dpi,
         image_ext=image_ext,
     )
-    logger.info("[Vision PPT] Selesai render %d slide gambar", len(slide_images))
+    logger.info(
+        "[Vision PPT] Selesai render %d slide gambar", len(slide_images)
+    )
 
     if db_path:
         db_out_path = Path(db_path).resolve()
@@ -498,6 +502,7 @@ def process_presentation_vision(
     total_tables = 0
 
     stream_file: Path | None = None
+    checkpoint_file: Path | None = None
     presentation_title: str | None = None
     if output_markdown_path:
         stream_file = Path(output_markdown_path).resolve()
@@ -507,12 +512,11 @@ def process_presentation_vision(
         )
         if resume and checkpoint_file.exists():
             try:
-                checkpoint_data = json.loads(
-                    checkpoint_file.read_text(encoding="utf-8")
-                )
-                if checkpoint_data.get("source_file") == str(
-                    path_obj
-                ) and checkpoint_data.get("total_pages") == len(slide_images):
+                checkpoint_data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                if (
+                    checkpoint_data.get("source_file") == str(path_obj)
+                    and checkpoint_data.get("total_pages") == len(slide_images)
+                ):
                     raw_pages = checkpoint_data.get("pages", {})
                     if isinstance(raw_pages, dict):
                         checkpoint_pages = {
@@ -521,14 +525,19 @@ def process_presentation_vision(
                             if isinstance(page_data, dict)
                         }
                     presentation_title = checkpoint_data.get("document_title")
+                    logger.info(
+                        "[Vision PPT] Melanjutkan dari checkpoint: %d/%d slide selesai.",
+                        len(checkpoint_pages),
+                        len(slide_images),
+                    )
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 logger.warning("[Vision PPT] Checkpoint tidak dapat dibaca: %s", exc)
 
         restored_pages = [
-            checkpoint_pages[page_number].get("markdown", "")
+            str(checkpoint_pages[page_number].get("markdown", ""))
             for page_number in sorted(checkpoint_pages)
         ]
-        pages_markdown.extend(str(page) for page in restored_pages)
+        pages_markdown.extend(restored_pages)
         total_visuals = sum(
             int(page.get("visual_count", 0)) for page in checkpoint_pages.values()
         )
@@ -547,14 +556,6 @@ def process_presentation_vision(
         else:
             stream_file.write_text("", encoding="utf-8")
         logger.info("[Vision PPT] Streaming output Markdown ke: %s", stream_file)
-
-    checkpoint_file = (
-        Path(output_markdown_path).resolve().parent
-        / "logs"
-        / f"{Path(output_markdown_path).stem}_checkpoint.json"
-        if output_markdown_path
-        else None
-    )
 
     def save_checkpoint() -> None:
         if checkpoint_file is None:
@@ -589,6 +590,10 @@ def process_presentation_vision(
                 str(img_file),
                 forced_specs=doc_spec,
                 is_first_page=(idx == 1),
+                page_number=idx,
+                region_output_dir=(
+                    target_slides_dir.parent / "regions" / f"slide_{idx:04d}"
+                ),
             )
             slide_md = res.get("markdown_content", "")
             total_visuals += int(res.get("visual_count", 0))
@@ -596,10 +601,8 @@ def process_presentation_vision(
             if res.get("visual_count", 0) or res.get("table_count", 0):
                 logger.info(
                     "[Vision PPT] [Slide %d/%d] Metadata: %d visual/diagram, %d tabel",
-                    idx,
-                    len(slide_images),
-                    res.get("visual_count", 0),
-                    res.get("table_count", 0),
+                    idx, len(slide_images),
+                    res.get("visual_count", 0), res.get("table_count", 0),
                 )
         else:
             if active_vlm is None:
@@ -625,14 +628,12 @@ def process_presentation_vision(
         # Mekanisme Judul Dokumen (hanya diekstrak di slide 1)
         if idx == 1:
             detected_title = (
-                getattr(res, "document_title", None) if res else None
-            ) or extract_document_title(slide_md, fallback_title=path_obj.stem)
+                (getattr(res, "document_title", None) if res else None)
+                or extract_document_title(slide_md, fallback_title=path_obj.stem)
+            )
             if detected_title:
                 presentation_title = detected_title
-                logger.info(
-                    "[Vision PPT] Judul presentasi teridentifikasi: '%s'",
-                    presentation_title,
-                )
+                logger.info("[Vision PPT] Judul presentasi teridentifikasi: '%s'", presentation_title)
 
         # Jalankan Sub-Agent SQL mandiri per slide
         process_page_tabular_agent(
@@ -685,15 +686,11 @@ def process_presentation_vision(
             )
             TabularDatabaseManager(db_out_path).export_to_csv(output_dir=csv_dir)
         except Exception as e_csv:  # noqa: BLE001
-            logger.warning(
-                "[Vision PPT] Gagal mengekspor tabel SQLite ke CSV: %s", e_csv
-            )
+            logger.warning("[Vision PPT] Gagal mengekspor tabel SQLite ke CSV: %s", e_csv)
 
     logger.info(
         "[Vision PPT] Selesai: %d slide | %d elemen visual/diagram | %d tabel terdeteksi",
-        len(slide_images),
-        total_visuals,
-        total_tables,
+        len(slide_images), total_visuals, total_tables,
     )
 
     if stream_file:

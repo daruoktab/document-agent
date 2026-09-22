@@ -3,7 +3,8 @@ Pembangun model chat (`ChatOpenAI`) untuk endpoint OpenAI-compatible.
 
 Menyediakan:
   - build_chat_model(base_url, model, api_key, ...) : builder generik
-  - build_vlm(settings)  : VLM normal (ekstraksi bebas + agent, structured output)
+  - build_vlm(settings)  : VLM utama (reasoning + agent + quality gate)
+  - build_ocr(settings)  : model OCR terstruktur
   - get_vlm(settings)    : Helper singleton / factory untuk VLM
   - encode_image, encode_image_to_base64, image_data_uri : utility encoding citra
 
@@ -163,6 +164,22 @@ def build_vlm(settings: Settings | None = None) -> ChatOpenAI:
         max_tokens=resolved.vlm_max_tokens,
         enable_thinking=resolved.vlm_enable_thinking,
         callbacks=[LoggingCallbackHandler(resolved.vlm_model, resolved.vlm_base_url)],
+    )
+
+
+def build_ocr(settings: Settings | None = None) -> ChatOpenAI:
+    """Model OCR terstruktur; OCR_MODEL wajib terisi sebelum builder dipanggil."""
+    resolved = settings or get_settings()
+    if not resolved.ocr_model:
+        raise ValueError("OCR_MODEL belum dikonfigurasi.")
+    return build_chat_model(
+        base_url=resolved.ocr_base_url,
+        model=resolved.ocr_model,
+        api_key=resolved.ocr_api_key,
+        temperature=resolved.ocr_temperature,
+        timeout=resolved.ocr_timeout,
+        max_tokens=resolved.ocr_max_tokens,
+        callbacks=[LoggingCallbackHandler(resolved.ocr_model, resolved.ocr_base_url)],
     )
 
 

@@ -30,6 +30,8 @@ class TestAgentOrchestrator(unittest.TestCase):
                 "has_diagram": True,
                 "diagram_type": "flowchart",
                 "has_table": False,
+                "rotation_degrees": 90,
+                "requires_vlm_reading": True,
             }
         )
         mock_llm.invoke.return_value = mock_resp
@@ -40,6 +42,8 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(res["specs"], ["presentation_slides"])
         self.assertTrue(res["has_diagram"])
         self.assertEqual(res["diagram_type"], "flowchart")
+        self.assertEqual(res.rotation_degrees, 90)
+        self.assertTrue(res.requires_vlm_reading)
 
     def test_extractor_judge_and_refine(self):
         mock_llm = MagicMock()

@@ -67,6 +67,7 @@ class DocumentExtractionAgent:
         llm: BaseChatModel,
         *,
         previous_page_context: str | None = None,
+        native_text: str | None = None,
     ) -> str:
         """Jalankan ekstraksi Markdown komposit pada gambar input."""
         extractor = self.build(llm)
@@ -74,6 +75,7 @@ class DocumentExtractionAgent:
             image_path=image_path,
             specs=self.specs,
             previous_page_context=previous_page_context,
+            native_text=native_text,
         )
 
 
