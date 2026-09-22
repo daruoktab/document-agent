@@ -1,0 +1,66 @@
+README.md
+  s_2f7adb793b19b3::t_ebc33591bc918a 3,5-6,23,51,58,67,76,252,254-255
+tests/test_paddle_ocr.py
+  s_2f7adb793b19b3::t_8fcd04ec5cdb1b 1-132
+app/streamlit_logic.py
+  s_2f7adb793b19b3::t_f70093e08f5c45 17
+tests/test_upload_batches.py
+  s_2f7adb793b19b3::t_f70093e08f5c45 13-18
+planning/2026-09-22_paddleocr-vl-textreflow.md
+  s_2f7adb793b19b3::t_f652ce3bb6e75b 1-21
+  s_2f7adb793b19b3::t_b1f560f7f716cc 22-23
+app/config.py
+  s_2f7adb793b19b3::t_85faf6d0873244 125
+  s_2f7adb793b19b3::t_984e75c09a6884 9,176-178,221-223
+app/text_reflow.py
+  s_2f7adb793b19b3::t_233d34d5b5e8f2 1-120
+env.template
+  s_2f7adb793b19b3::t_85faf6d0873244 13,15,17,23
+tests/test_text_reflow.py
+  s_2f7adb793b19b3::t_8fcd04ec5cdb1b 1,3-16,18-73
+  s_2f7adb793b19b3::t_3f52f3cf1247b5 2,17
+pyproject.toml
+  s_2f7adb793b19b3::t_85faf6d0873244 29-30,34
+app/schemas.py
+  s_2f7adb793b19b3::t_984e75c09a6884 79,83-97,99-100,126,148-149,238-239
+tests/test_config_ocr.py
+  s_2f7adb793b19b3::t_f652ce3bb6e75b 3,6,69-94
+  s_2f7adb793b19b3::t_8fcd04ec5cdb1b 17,19,31
+  s_7308d0443dd71a::t_e868b9444f9266 95
+app/paddle_ocr.py
+  s_2f7adb793b19b3::t_233d34d5b5e8f2 1-34,36-300,304-316,323-360
+  s_2f7adb793b19b3::t_10a9735930e735 301-303,317-322
+  s_2f7adb793b19b3::t_3f52f3cf1247b5 35
+app/graph.py
+  s_2f7adb793b19b3::t_b1f560f7f716cc 157,171-175,189-193,477-479
+  s_2f7adb793b19b3::t_6feb8861119357 24
+  s_2f7adb793b19b3::t_984e75c09a6884 27,31,151,156,158,176-177,179-181,194,292-293,480-496,498-502,540
+app/surveyor.py
+  s_2f7adb793b19b3::t_3f52f3cf1247b5 247,276-278
+uv.lock
+  s_2f7adb793b19b3::t_1e3e94d64092a5 7-9,12-14,17-19,144-159,244-271,421-461,623-714,765-786,848-849,859,876-877,887,916-936,1127-1147,1361-1369,1480-1491,1735-1743,1986-2028,2187-2245,2299-2315,2340-2351,2453-2562,2680-2707,2845-2853,2911-2940,2950-2979,3177-3269,3336-3357,3585-3593,3606-3794,3804-3854,3873-3881,3958-3975,4110-4201,4320-4328
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c1f3653b3cd5df9df8b53287146a514c7f0ede6e",
+  "prompts": {},
+  "sessions": {
+    "s_2f7adb793b19b3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c743-7450-7612-86fe-b95c49ccfb77",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    },
+    "s_7308d0443dd71a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f39177305ffeE2NCQsllFiBs9q",
+        "model": "unknown"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
