@@ -430,6 +430,21 @@ class VisionExtractor:
         else:
             response = self.llm.invoke(messages)
             raw_content = str(response.content or "").strip()
+            metadata = response.response_metadata or {}
+            if (
+                not strip_thinking_process(raw_content).strip()
+                and metadata.get("finish_reason") == "length"
+            ):
+                logger.warning(
+                    "[Extractor:Markdown] Output kosong pada batas generasi; "
+                    "ulangi sekali tanpa thinking. token_usage=%s",
+                    metadata.get("token_usage"),
+                )
+                response = self.llm.invoke(
+                    messages,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                raw_content = str(response.content or "").strip()
         md_text = strip_thinking_process(raw_content)
 
         # Bersihkan pembungkus markdown block ```markdown ... ``` jika VLM membungkusnya

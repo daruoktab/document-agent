@@ -7,12 +7,14 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from app.config import Settings
 from app.excel import (
     _convert_excel_regions_to_pdf,
     _convert_workbook_to_xlsx_copy,
     persist_excel_native_data,
+    split_excel_regions_into_tiles,
     survey_excel_workbook,
 )
 from app.pdf import pdf_page_count
@@ -20,6 +22,40 @@ from app.ppt import _find_libreoffice_binary
 
 
 class TestExcelRegionSurvey(unittest.TestCase):
+    @unittest.skipUnless(_find_libreoffice_binary(), "LibreOffice tidak tersedia")
+    def test_vertical_tiles_render_only_their_rows(self) -> None:
+        import pymupdf
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "tall.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.column_dimensions["A"].width = 24
+            for row in range(1, 45):
+                sheet.cell(row, 1, f"MARKER{row:03d}")
+                sheet.cell(row, 2, row)
+            workbook.save(path)
+            settings = Settings(excel_tile_max_columns=8, excel_tile_max_rows=20)
+            survey = split_excel_regions_into_tiles(
+                survey_excel_workbook(path, settings=settings), settings,
+            )
+            regions = survey.sheets[0].regions
+            pdf = root / "tiles.pdf"
+            self.assertTrue(_convert_excel_regions_to_pdf(
+                path, pdf, root / "profile", regions,
+            ))
+            with pymupdf.open(pdf) as document:
+                self.assertEqual(len(document), len(regions))
+                for page, region in zip(document, regions, strict=True):
+                    text = page.get_text()
+                    expected_rows = {cell.row for cell in region.cells}
+                    for row in range(1, 45):
+                        self.assertEqual(
+                            f"MARKER{row:03d}" in text, row in expected_rows,
+                            f"{region.region_id}: wrong presence of row {row}",
+                        )
+
     def _build_side_by_side_workbook(self, path: Path) -> None:
         workbook = Workbook()
         sheet = workbook.active
@@ -121,6 +157,35 @@ class TestExcelRegionSurvey(unittest.TestCase):
             self.assertEqual(periods, {"FEB 2026", "MAR 2026"})
             self.assertEqual(source_rows, 4)
             self.assertGreater(evidence_count, 20)
+
+    def test_wide_region_is_tiled_and_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wide.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Wide"
+            for column in range(1, 25):
+                sheet.cell(1, column, f"H{column}")
+                for row_number in range(2, 35):
+                    sheet.cell(row_number, column, row_number * column)
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path, settings=Settings(
+                excel_tile_max_columns=12,
+                excel_tile_max_rows=40,
+            ))
+            tiled = split_excel_regions_into_tiles(survey, Settings(
+                excel_tile_max_columns=12,
+                excel_tile_max_rows=40,
+            ))
+            regions = tiled.sheets[0].regions
+            self.assertEqual(len(regions), 2)
+            self.assertTrue(all(region.is_tile for region in regions))
+            self.assertEqual({region.parent_region_id for region in regions}, {"s001_r001"})
+            self.assertEqual(
+                {cell.coordinate for region in regions for cell in region.cells},
+                {f"{get_column_letter(column)}{row}" for column in range(1, 25) for row in range(1, 35)},
+            )
 
     @unittest.skipUnless(_find_libreoffice_binary(), "LibreOffice tidak tersedia")
     def test_region_renderer_produces_one_page_per_region(self) -> None:

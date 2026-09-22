@@ -10,7 +10,12 @@ from zipfile import ZipFile
 
 from app.job_tracker import JobManager
 from app.streamlit_logic import _save_uploaded_files, build_batch_zip
-from app.upload_batches import create_batch, delete_batch, delete_document_from_batch, list_batches
+from app.upload_batches import (
+    create_batch,
+    delete_batch,
+    delete_document_from_batch,
+    list_batches,
+)
 
 
 class UploadedFileStub:

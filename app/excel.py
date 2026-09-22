@@ -38,6 +38,12 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 
+def _column_letter(column: int) -> str:
+    from openpyxl.utils import get_column_letter
+
+    return get_column_letter(column)
+
+
 def _find_uno_python(soffice: str | None = None) -> str | None:
     """Temukan Python sistem yang menyediakan modul UNO LibreOffice."""
     candidates = []
@@ -658,6 +664,168 @@ def survey_excel_workbook(
     )
 
 
+def _split_region_into_tiles(
+    region: ExcelRegion, settings: Settings
+) -> list[ExcelRegion]:
+    """Split an oversized Excel region while retaining repeated header evidence."""
+    max_columns = max(1, settings.excel_tile_max_columns)
+    max_rows = max(1, settings.excel_tile_max_rows)
+    width = region.max_column - region.min_column + 1
+    height = region.max_row - region.min_row + 1
+    if width <= max_columns and height <= max_rows:
+        return [region]
+
+    evidence_by_row: dict[int, list[ExcelCellEvidence]] = {}
+    for item in region.cells:
+        evidence_by_row.setdefault(item.row, []).append(item)
+    populated_rows = sorted(evidence_by_row)
+    header_count = min(3, len(populated_rows))
+    header_rows = set(populated_rows[:header_count])
+    data_rows = populated_rows[header_count:] or populated_rows
+    row_ranges = []
+    for offset in range(0, len(data_rows), max_rows):
+        chunk = data_rows[offset : offset + max_rows]
+        row_ranges.append((min(chunk), max(chunk)))
+    column_ranges = [
+        (start, min(start + max_columns - 1, region.max_column))
+        for start in range(region.min_column, region.max_column + 1, max_columns)
+    ]
+
+    tiles: list[ExcelRegion] = []
+    for tile_row_index, (data_min_row, data_max_row) in enumerate(row_ranges):
+        row_set = set(header_rows)
+        row_set.update(range(data_min_row, data_max_row + 1))
+        for tile_column_index, (min_column, max_column) in enumerate(column_ranges):
+            tile_cells = [
+                item
+                for item in region.cells
+                if item.row in row_set and min_column <= item.column <= max_column
+            ]
+            if not tile_cells:
+                continue
+            tile_min_row = min(item.row for item in tile_cells)
+            tile_max_row = max(item.row for item in tile_cells)
+            tile_id = f"{region.region_id}_t{tile_row_index + 1:02d}_{tile_column_index + 1:02d}"
+            tile = region.model_copy(
+                update={
+                    "region_id": tile_id,
+                    "cell_range": (
+                        f"{_column_letter(min_column)}{tile_min_row}:"
+                        f"{_column_letter(max_column)}{tile_max_row}"
+                    ),
+                    "min_row": tile_min_row,
+                    "max_row": tile_max_row,
+                    "min_column": min_column,
+                    "max_column": max_column,
+                    "cells": tile_cells,
+                    "native_text": "",
+                    "parent_region_id": region.region_id,
+                    "tile_row_index": tile_row_index,
+                    "tile_column_index": tile_column_index,
+                    "is_tile": True,
+                }
+            )
+            tile.native_text = _region_native_text(
+                sheet_name=tile.sheet_name,
+                cell_range=tile.cell_range,
+                cells=tile.cells,
+            )
+            tiles.append(tile)
+
+    logger.info(
+        "[Excel] Region %s dipecah menjadi %d tile (%d kolom x %d baris maksimum).",
+        region.region_id,
+        len(tiles),
+        max_columns,
+        max_rows,
+    )
+    return tiles or [region]
+
+
+def split_excel_regions_into_tiles(
+    survey: ExcelWorkbookSurvey, settings: Settings | None = None
+) -> ExcelWorkbookSurvey:
+    """Return a survey whose oversized regions are represented by extraction tiles."""
+    resolved_settings = settings or get_settings()
+    updated_sheets = []
+    for sheet in survey.sheets:
+        if not sheet.visible:
+            updated_sheets.append(sheet)
+            continue
+        tiled_regions = [
+            tile
+            for region in sheet.regions
+            for tile in _split_region_into_tiles(region, resolved_settings)
+        ]
+        updated_sheets.append(sheet.model_copy(update={"regions": tiled_regions}))
+    return survey.model_copy(update={"sheets": updated_sheets})
+
+
+def _combine_tile_regions(regions: list[ExcelRegion]) -> ExcelRegion:
+    """Combine tile evidence back into one logical region by cell coordinate."""
+    unique_cells = {
+        item.coordinate: item
+        for region in regions
+        for item in region.cells
+    }
+    return regions[0].model_copy(
+        update={
+            "region_id": regions[0].parent_region_id or regions[0].region_id,
+            "cell_range": (
+                f"{_column_letter(min(item.column for item in unique_cells.values()))}"
+                f"{min(item.row for item in unique_cells.values())}:"
+                f"{_column_letter(max(item.column for item in unique_cells.values()))}"
+                f"{max(item.row for item in unique_cells.values())}"
+            ),
+            "min_row": min(item.row for item in unique_cells.values()),
+            "max_row": max(item.row for item in unique_cells.values()),
+            "min_column": min(item.column for item in unique_cells.values()),
+            "max_column": max(item.column for item in unique_cells.values()),
+            "cells": list(unique_cells.values()),
+            "native_text": "",
+            "parent_region_id": None,
+            "tile_row_index": 0,
+            "tile_column_index": 0,
+            "is_tile": False,
+        }
+    )
+
+
+def _native_region_markdown(region: ExcelRegion) -> str:
+    """Create one deterministic Markdown table from native cell evidence."""
+    cells = {(item.row, item.column): item for item in region.cells}
+    rows = sorted({row for row, _ in cells})
+    columns = sorted({column for _, column in cells})
+    if not rows or not columns:
+        return ""
+    header_rows = rows[: min(3, len(rows))]
+    if len(header_rows) > 1 and sum(bool(cells.get((header_rows[0], col))) for col in columns) <= 1:
+        header_rows = header_rows[1:]
+    data_rows = [row for row in rows if row not in header_rows]
+
+    def value(row: int, column: int) -> str:
+        item = cells.get((row, column))
+        if item is None:
+            return ""
+        raw = item.value
+        if raw in (None, "") and item.formula:
+            raw = f"={item.formula}"
+        return str(raw or "").replace("|", "\\|").replace("\n", " ").strip()
+
+    headers = []
+    for column in columns:
+        parts = [value(row, column) for row in header_rows]
+        parts = [part for part in parts if part]
+        headers.append(" ".join(dict.fromkeys(parts)) or _column_letter(column))
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in data_rows:
+        lines.append("| " + " | ".join(value(row, column) for column in columns) + " |")
+    return "\n".join(lines)
+
+
 def _convert_workbook_to_xlsx_copy(
     source: Path,
     output_dir: Path,
@@ -719,6 +887,10 @@ def _convert_excel_regions_to_pdf(
                     "max_row": region.max_row - 1,
                     "min_column": region.min_column - 1,
                     "max_column": region.max_column - 1,
+                    "included_rows": (
+                        sorted({cell.row - 1 for cell in region.cells})
+                        if region.is_tile else None
+                    ),
                     "output": str(region_dir / f"{index:04d}.pdf"),
                 }
                 for index, region in enumerate(regions, start=1)
@@ -795,7 +967,11 @@ if document is None:
 try:
     sheets = document.getSheets()
     page_styles = document.getStyleFamilies().getByName("PageStyles")
+    changed_rows = []
     for spec in specs:
+        for row, was_visible in changed_rows:
+            row.setPropertyValue("IsVisible", was_visible)
+        changed_rows = []
         for sheet_index in range(sheets.getCount()):
             sheet = sheets.getByIndex(sheet_index)
             sheet.setPrintAreas(())
@@ -804,6 +980,15 @@ try:
             except Exception:
                 pass
         selected = sheets.getByIndex(int(spec["sheet_index"]))
+        included_rows = spec.get("included_rows")
+        if included_rows is not None:
+            included_rows = set(included_rows)
+            sheet_rows = selected.getRows()
+            for row_index in range(int(spec["min_row"]), int(spec["max_row"]) + 1):
+                if row_index not in included_rows:
+                    row = sheet_rows.getByIndex(row_index)
+                    changed_rows.append((row, row.getPropertyValue("IsVisible")))
+                    row.setPropertyValue("IsVisible", False)
         address = uno.createUnoStruct("com.sun.star.table.CellRangeAddress")
         address.Sheet = int(spec["sheet_index"])
         address.StartColumn = int(spec["min_column"])
@@ -907,6 +1092,15 @@ def persist_excel_native_data(
     target = Path(db_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     created_tables: list[str] = []
+    logical_sheets: dict[str, list[ExcelRegion]] = {}
+    for sheet in survey.sheets:
+        groups: dict[str, list[ExcelRegion]] = {}
+        for region in sheet.regions:
+            groups.setdefault(region.parent_region_id or region.region_id, []).append(region)
+        logical_sheets[sheet.name] = [
+            _combine_tile_regions(group) if len(group) > 1 and group[0].is_tile else group[0]
+            for group in groups.values()
+        ]
     grouped_regions: dict[tuple[str, tuple[str, ...]], list[tuple[ExcelRegion, int]]] = {}
 
     with sqlite3.connect(target) as connection:
@@ -949,7 +1143,7 @@ def persist_excel_native_data(
         connection.execute("DELETE FROM excel_cells WHERE source_file = ?", (survey.source_file,))
 
         for sheet in survey.sheets:
-            for region in sheet.regions:
+            for region in logical_sheets[sheet.name]:
                 connection.execute(
                     """
                     INSERT INTO excel_regions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1109,6 +1303,7 @@ def process_multipage_excel(
                         raise
                     survey_source = path_obj
                 survey = survey_excel_workbook(survey_source, settings=settings)
+                survey = split_excel_regions_into_tiles(survey, settings=settings)
                 survey.source_file = str(path_obj)
                 survey.workbook_format = path_obj.suffix.lower().lstrip(".")
                 regions = [
@@ -1237,7 +1432,21 @@ def process_multipage_excel(
         if region_rendered and len(result.pages) == len(regions):
             blocks: list[str] = []
             current_sheet: str | None = None
+            tile_groups: dict[str, list[ExcelRegion]] = {}
+            for region in regions:
+                if region.parent_region_id:
+                    tile_groups.setdefault(region.parent_region_id, []).append(region)
+            rendered_tile_groups: set[str] = set()
             for page, region in zip(result.pages, regions, strict=True):
+                if region.parent_region_id:
+                    parent_id = region.parent_region_id
+                    group = tile_groups[parent_id]
+                    if parent_id in rendered_tile_groups:
+                        continue
+                    rendered_tile_groups.add(parent_id)
+                    combined = _combine_tile_regions(group)
+                    page.markdown_content = _native_region_markdown(combined)
+                    region = combined
                 page_parts: list[str] = []
                 if region.sheet_name != current_sheet:
                     page_parts.append(f"## Sheet: {region.sheet_name}")
@@ -1269,5 +1478,6 @@ __all__ = [
     "excel_page_count",
     "persist_excel_native_data",
     "process_multipage_excel",
+    "split_excel_regions_into_tiles",
     "survey_excel_workbook",
 ]

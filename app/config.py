@@ -173,6 +173,12 @@ class Settings:
     excel_max_region_rows: int = field(
         default_factory=lambda: _int_env("EXCEL_MAX_REGION_ROWS", "80")
     )
+    excel_tile_max_columns: int = field(
+        default_factory=lambda: _int_env("EXCEL_TILE_MAX_COLUMNS", "12")
+    )
+    excel_tile_max_rows: int = field(
+        default_factory=lambda: _int_env("EXCEL_TILE_MAX_ROWS", "40")
+    )
 
     # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
     ocr_model: str = field(default_factory=lambda: _optional_env("OCR_MODEL"))

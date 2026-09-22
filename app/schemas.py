@@ -1008,6 +1008,10 @@ class ExcelRegion(BaseModel):
     requires_vlm_reading: bool = False
     native_text: str = ""
     cells: list[ExcelCellEvidence] = Field(default_factory=list)
+    parent_region_id: str | None = None
+    tile_row_index: int = 0
+    tile_column_index: int = 0
+    is_tile: bool = False
 
 
 class ExcelSheetSurvey(BaseModel):
