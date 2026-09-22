@@ -5,21 +5,57 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, Reference
+from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from app.config import Settings
 from app.excel import (
     _convert_excel_regions_to_pdf,
     _convert_workbook_to_xlsx_copy,
+    compose_excel_markdown,
     persist_excel_native_data,
+    plan_excel_visual_regions,
     survey_excel_workbook,
 )
 from app.pdf import pdf_page_count
 from app.ppt import _find_libreoffice_binary
+from app.schemas import ExcelNativeArtifact
 
 
 class TestExcelRegionSurvey(unittest.TestCase):
+    def _build_adaptive_workbook(self, path: Path) -> None:
+        workbook = Workbook()
+        data = workbook.active
+        data.title = "Records"
+        data.append(["ID", "Area", "Amount", "Status"])
+        for row in range(1, 41):
+            data.append([row, f"Area {row % 5}", row * 1250, "Open"])
+
+        summary = workbook.create_sheet("Rollup")
+        summary.append(["Metric", "Value"])
+        for row in range(2, 14):
+            summary.append([f"Metric {row - 1}", f"=SUM(Records!C2:C{row + 1})"])
+
+        support = workbook.create_sheet("ChartData")
+        support.append(["Period", "Value"])
+        for row in range(2, 14):
+            support.append([f"Period {row - 1}", f"=Records!C{row}"])
+
+        dashboard = workbook.create_sheet("Visual")
+        dashboard.merge_cells("A1:H1")
+        dashboard["A1"] = "Operational Monitoring"
+        dashboard["A3"] = "=ChartData!A1"
+        chart = LineChart()
+        chart.title = "Movement"
+        chart.add_data(
+            Reference(support, min_col=2, min_row=1, max_row=13),
+            titles_from_data=True,
+        )
+        chart.set_categories(Reference(support, min_col=1, min_row=2, max_row=13))
+        chart.anchor = "A5"
+        dashboard.add_chart(chart)
+        workbook.save(path)
+
     def _build_side_by_side_workbook(self, path: Path) -> None:
         workbook = Workbook()
         sheet = workbook.active
@@ -121,6 +157,59 @@ class TestExcelRegionSurvey(unittest.TestCase):
             self.assertEqual(periods, {"FEB 2026", "MAR 2026"})
             self.assertEqual(source_rows, 4)
             self.assertGreater(evidence_count, 20)
+
+    def test_adaptive_roles_and_visual_plan_are_content_driven(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "arbitrary-name.xlsx"
+            self._build_adaptive_workbook(path)
+
+            survey = survey_excel_workbook(path)
+            roles = {sheet.name: sheet.role for sheet in survey.sheets}
+            visual_regions = plan_excel_visual_regions(survey)
+
+            self.assertEqual(roles["Visual"], "dashboard")
+            self.assertEqual(roles["Rollup"], "summary")
+            self.assertEqual(roles["ChartData"], "support")
+            self.assertEqual(roles["Records"], "detail")
+            self.assertEqual(survey.extraction_order[0], "Visual")
+            self.assertEqual(survey.extraction_order[-1], "ChartData")
+            self.assertEqual(len(visual_regions), 1)
+            self.assertEqual(visual_regions[0].sheet_name, "Visual")
+            self.assertEqual(visual_regions[0].render_strategy, "visual")
+
+    def test_markdown_summarizes_charts_and_links_complete_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "adaptive.xlsx"
+            csv_path = Path(directory) / "records.csv"
+            self._build_adaptive_workbook(path)
+            survey = survey_excel_workbook(path)
+            chart = next(sheet for sheet in survey.sheets if sheet.name == "Visual").charts[0]
+            chart.series[0].name = "Value"
+            chart.series[0].categories = ["2026-01", "2026-02", "Closed"]
+            chart.series[0].values = [10, 15, None]
+            chart.warnings = ["Seri mencampur kategori periode dengan kategori nonperiode."]
+
+            markdown, sections = compose_excel_markdown(
+                survey,
+                fallback_title="adaptive",
+                artifacts=[
+                    ExcelNativeArtifact(
+                        sheet_name="Records",
+                        table_name="excel_records_test",
+                        row_count=40,
+                        columns=["id", "area", "amount", "status"],
+                        csv_path=str(csv_path),
+                    )
+                ],
+            )
+
+            self.assertIn("Operational Monitoring", markdown)
+            self.assertIn("### Grafik: Movement", markdown)
+            self.assertIn("| Kategori | Value |", markdown)
+            self.assertIn("Data lengkap", markdown)
+            self.assertIn(str(csv_path), markdown)
+            self.assertIn("Sheet pendukung", markdown)
+            self.assertEqual(sections[0][0], "Visual")
 
     @unittest.skipUnless(_find_libreoffice_binary(), "LibreOffice tidak tersedia")
     def test_region_renderer_produces_one_page_per_region(self) -> None:

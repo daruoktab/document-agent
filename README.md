@@ -75,7 +75,7 @@ EXCEL_SMALL_FONT_POINTS=8
 
 Ketika `OCR_MODEL` diisi, pipeline resmi PaddleOCR-VL menjalankan layout analysis lokal dan mengirim crop elemen ke recognizer GGUF. Hasilnya menjadi draft utama hanya setelah lolos quality gate. TextReflow diterapkan otomatis pada halaman prosa satu/dua kolom yang tidak mengandung tabel, formula, atau figure; halaman lain mempertahankan Markdown Paddle. Pipeline membandingkan hasil dengan text-layer PDF, mencoba rotasi alternatif pada kandidat berisiko, dan memakai Gemma secara independen saat trust OCR rendah. Crop `table` dan `figure` disimpan ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman karena mengaktifkan fallback Gemma.
 
-Untuk Excel, pipeline menyurvei nilai sel, formula, merge, style, dan blok tabel sebelum rendering. Tabel berdampingan dirender sebagai region terpisah pada DPI adaptif; font kecil atau teks miring memicu pembacaan VLM utama. Nilai native disimpan bersama provenance sel ke SQLite/CSV dan menjadi bukti angka saat ekstraksi serta judge.
+Untuk Excel, pipeline menyurvei isi, formula, relasi antarsheet, grafik, merge, style, dan blok tabel sebelum rendering. Peran sheet ditentukan dari pola isinya—dashboard dirender sebagai konteks visual, ringkasan dibentuk dari nilai native, data detail dilampirkan lengkap melalui SQLite/CSV, dan sheet formula pendukung tetap tercatat untuk audit. Grafik native diubah menjadi narasi serta tabel Markdown; font kecil atau teks miring tetap dapat memicu pembacaan VLM adaptif.
 
 ---
 

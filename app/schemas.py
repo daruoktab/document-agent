@@ -1027,8 +1027,31 @@ class ExcelRegion(BaseModel):
     kind: Literal["table", "text", "mixed"] = "mixed"
     render_dpi: int = Field(default=300, ge=72)
     requires_vlm_reading: bool = False
+    render_strategy: Literal["native", "visual", "hybrid"] = "hybrid"
+    persist_native: bool = True
     native_text: str = ""
     cells: list[ExcelCellEvidence] = Field(default_factory=list)
+
+
+class ExcelChartSeries(BaseModel):
+    """Satu seri grafik beserta nilai cache dan referensi sumbernya."""
+
+    name: str
+    category_reference: str | None = None
+    value_reference: str | None = None
+    categories: list[Any] = Field(default_factory=list)
+    values: list[float | int | None] = Field(default_factory=list)
+
+
+class ExcelChartEvidence(BaseModel):
+    """Representasi native grafik tanpa bergantung pada OCR gambar."""
+
+    chart_id: str
+    title: str
+    chart_type: str
+    cell_range: str
+    series: list[ExcelChartSeries] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ExcelSheetSurvey(BaseModel):
@@ -1038,6 +1061,16 @@ class ExcelSheetSurvey(BaseModel):
     index: int = Field(..., ge=0)
     visible: bool = True
     used_range: str | None = None
+    role: Literal["dashboard", "summary", "detail", "support", "plain"] = "plain"
+    role_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    role_reasons: list[str] = Field(default_factory=list)
+    render_strategy: Literal["native", "visual", "hybrid"] = "hybrid"
+    nonempty_cell_count: int = Field(default=0, ge=0)
+    formula_count: int = Field(default=0, ge=0)
+    row_count: int = Field(default=0, ge=0)
+    column_count: int = Field(default=0, ge=0)
+    dependencies: list[str] = Field(default_factory=list)
+    charts: list[ExcelChartEvidence] = Field(default_factory=list)
     regions: list[ExcelRegion] = Field(default_factory=list)
 
 
@@ -1047,7 +1080,18 @@ class ExcelWorkbookSurvey(BaseModel):
     source_file: str
     workbook_format: str
     sheets: list[ExcelSheetSurvey] = Field(default_factory=list)
+    extraction_order: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+class ExcelNativeArtifact(BaseModel):
+    """Artefak tabular lengkap yang menyertai ringkasan Markdown workbook."""
+
+    sheet_name: str
+    table_name: str
+    row_count: int = Field(default=0, ge=0)
+    columns: list[str] = Field(default_factory=list)
+    csv_path: str | None = None
 
 
 class ExtractedDocument(BaseModel):
@@ -1102,6 +1146,10 @@ class ExtractedDocument(BaseModel):
     excel_native_tables: list[str] = Field(
         default_factory=list,
         description="Nama tabel SQLite yang dibuat langsung dari nilai sel spreadsheet",
+    )
+    excel_native_artifacts: list[ExcelNativeArtifact] = Field(
+        default_factory=list,
+        description="Lokasi dan skema artefak native untuk data spreadsheet lengkap",
     )
 
     @property
