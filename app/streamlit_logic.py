@@ -14,9 +14,11 @@ Fitur Utama:
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 import sys
+import time
 from collections.abc import Sequence
 from datetime import datetime
 from io import BytesIO
@@ -42,7 +44,12 @@ class UploadedFileLike(Protocol):
 
 from app.job_tracker import JobManager, is_pid_alive
 from app.tabular_db import cross_verify_dual_track
-from app.upload_batches import create_batch, list_batches
+from app.upload_batches import (
+    create_batch,
+    delete_batch,
+    delete_document_from_batch,
+    list_batches,
+)
 
 SUPPORTED_TYPES = [
     "pdf",
@@ -282,13 +289,6 @@ def _save_uploaded_file(uploaded_file: UploadedFileLike, output_dir: Path) -> Pa
     suffix = Path(name).suffix.lower()
     stem = Path(name).stem
 
-    # Rerun Streamlit tidak membuat salinan baru untuk upload yang sama persis.
-    for existing in uploads_dir.iterdir():
-        if existing.suffix.lower() != suffix:
-            continue
-        if existing.is_file() and existing.read_bytes() == content:
-            return existing
-
     def stem_is_used(candidate_stem: str) -> bool:
         # Cegah collision lintas ekstensi: laporan.pdf dan laporan.docx
         # tidak boleh memakai job/output directory yang sama.
@@ -320,12 +320,59 @@ def _save_uploaded_files(
     output_dir: Path,
 ) -> list[Path]:
     """Simpan beberapa file upload dan kembalikan path dalam urutan pilihan user."""
-    return list(
-        dict.fromkeys(
-            _save_uploaded_file(uploaded_file, output_dir)
-            for uploaded_file in uploaded_files
+    saved: list[Path] = []
+    seen_uploads: set[tuple[str, str]] = set()
+    for uploaded_file in uploaded_files:
+        content = uploaded_file.getvalue()
+        normalized_name = Path(uploaded_file.name.replace("\\", "/")).name
+        fingerprint = (normalized_name, hashlib.sha256(content).hexdigest())
+        if fingerprint in seen_uploads:
+            continue
+        seen_uploads.add(fingerprint)
+        saved.append(_save_uploaded_file(uploaded_file, output_dir))
+    return saved
+
+
+def _save_staged_uploaded_files(
+    uploaded_files: Sequence[UploadedFileLike], output_dir: Path
+) -> list[Path]:
+    """Save one upload selection once, even when Streamlit reruns the page."""
+    signature = tuple(
+        (
+            Path(uploaded_file.name.replace("\\", "/")).name,
+            hashlib.sha256(uploaded_file.getvalue()).hexdigest(),
         )
+        for uploaded_file in uploaded_files
     )
+    cached_signature = st.session_state.get("staged_upload_signature")
+    cached_paths = [Path(path) for path in st.session_state.get("staged_upload_paths", [])]
+    if signature == cached_signature and cached_paths and all(path.is_file() for path in cached_paths):
+        return cached_paths
+    saved_paths = _save_uploaded_files(uploaded_files, output_dir)
+    st.session_state["staged_upload_signature"] = signature
+    st.session_state["staged_upload_paths"] = [str(path) for path in saved_paths]
+    return saved_paths
+
+
+def _clear_staged_uploads() -> None:
+    st.session_state.pop("staged_upload_signature", None)
+    st.session_state.pop("staged_upload_paths", None)
+
+
+def _cancel_jobs_before_delete(manager: JobManager, stems: Sequence[str], output_dir: Path) -> None:
+    """Cancel active jobs and give their subprocesses a short grace period."""
+    active_stems = []
+    for stem in dict.fromkeys(stems):
+        job = manager.get_job(stem, output_dir=output_dir)
+        if job and job.status in {"queued", "running", "paused"}:
+            manager.cancel_job(stem)
+            active_stems.append(stem)
+    deadline = time.monotonic() + 5
+    while active_stems and time.monotonic() < deadline:
+        current_jobs = [manager.get_job(stem, output_dir=output_dir) for stem in active_stems]
+        if all(not job or job.status not in {"queued", "running", "paused"} for job in current_jobs):
+            break
+        time.sleep(0.1)
 
 
 def _get_sqlite_db_for_file(file_stem: str, output_dir: Path) -> Path | None:
@@ -525,6 +572,58 @@ def build_batch_zip(batch: dict[str, Any], output_dir: Path) -> bytes:
     return buffer.getvalue()
 
 
+@st.dialog("Konfirmasi penghapusan batch")
+def _confirm_delete_batch(batch: dict[str, Any], output_dir: Path) -> None:
+    st.warning(
+        f"Batch **{batch['name']}** akan dihapus bersama manifest, ZIP, dan hasil ingest "
+        "yang tidak dipakai batch lain."
+    )
+    st.caption(f"Jumlah file: {len(batch.get('documents', []))}")
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button("Hapus batch", type="primary", use_container_width=True):
+            _cancel_jobs_before_delete(
+                JobManager.get_instance(),
+                [doc["stem"] for doc in batch.get("documents", [])],
+                output_dir,
+            )
+            delete_batch(output_dir, batch["id"])
+            if st.session_state.get("selected_batch_id") == batch["id"]:
+                st.session_state["selected_batch_id"] = None
+                st.session_state["selected_stem"] = None
+            st.rerun()
+    with cancel_col:
+        if st.button("Batal", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("Konfirmasi penghapusan file")
+def _confirm_delete_batch_file(
+    batch: dict[str, Any], document: dict[str, str], output_dir: Path
+) -> None:
+    file_name = document.get("source_name", document["stem"])
+    st.warning(
+        f"File **{file_name}** akan dikeluarkan dari batch **{batch['name']}** dan hasil "
+        "ingest-nya dihapus jika tidak dipakai batch lain. File sumber tetap dipertahankan."
+    )
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button("Hapus file", type="primary", use_container_width=True):
+            _cancel_jobs_before_delete(
+                JobManager.get_instance(), [document["stem"]], output_dir
+            )
+            result = delete_document_from_batch(output_dir, batch["id"], document["stem"])
+            if result.get("deleted_batch"):
+                st.session_state["selected_batch_id"] = None
+                st.session_state["selected_stem"] = None
+            elif st.session_state.get("selected_stem") == document["stem"]:
+                st.session_state["selected_stem"] = None
+            st.rerun()
+    with cancel_col:
+        if st.button("Batal", use_container_width=True):
+            st.rerun()
+
+
 def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
     st.subheader(batch["name"])
     manager = JobManager.get_instance()
@@ -548,6 +647,20 @@ def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
         "Gagal",
         sum(bool(job and job.status in {"failed", "canceled"}) for job in jobs),
     )
+    action_col = st.columns([1, 1, 4])
+    with action_col[0]:
+        if st.button("🗑️ Hapus batch", key=f"delete_batch_{batch['id']}", use_container_width=True):
+            _confirm_delete_batch(batch, output_dir)
+    with action_col[1]:
+        st.caption("Penghapusan memerlukan konfirmasi")
+    st.markdown("#### File dalam batch")
+    for document in batch.get("documents", []):
+        file_col, delete_col = st.columns([6, 1])
+        with file_col:
+            st.write(document.get("source_name", document["stem"]))
+        with delete_col:
+            if st.button("Hapus", key=f"delete_file_{batch['id']}_{document['stem']}", use_container_width=True):
+                _confirm_delete_batch_file(batch, document, output_dir)
     resumable_jobs = [
         job
         for job in jobs
@@ -1531,6 +1644,12 @@ def main() -> None:
                             else None
                         )
                         st.rerun()
+                    if st.button(
+                        "🗑️ Hapus batch",
+                        key=f"history_delete_batch_{batch['id']}",
+                        use_container_width=True,
+                    ):
+                        _confirm_delete_batch(batch, output_dir)
             if not batches:
                 st.caption(
                     "Batch upload baru akan tercatat di sini, termasuk setelah restart."
@@ -1583,6 +1702,7 @@ def main() -> None:
             st.session_state["selected_batch_id"] = None
             st.rerun()
         if st.button("Upload baru"):
+            _clear_staged_uploads()
             st.session_state["selected_stem"] = None
             st.session_state["selected_batch_id"] = None
             st.rerun()
@@ -1671,7 +1791,7 @@ def main() -> None:
         uploaded_files = list(uploaded_files or []) + list(uploaded_directory or [])
 
         if uploaded_files:
-            saved_files = _save_uploaded_files(uploaded_files, output_dir)
+            saved_files = _save_staged_uploaded_files(uploaded_files, output_dir)
             st.markdown(f"#### 📋 {len(saved_files)} File Siap Diproses")
             if len(saved_files) > 1:
                 with st.container(border=True):
@@ -1740,6 +1860,7 @@ def main() -> None:
 
                 # Buka monitor file pertama; semua file tetap berjalan di background.
                 if started_jobs:
+                    _clear_staged_uploads()
                     st.session_state["selected_stem"] = started_jobs[0].job_id
                     st.session_state["batch_upload_stems"] = [
                         job.job_id for job in started_jobs
