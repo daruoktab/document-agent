@@ -1,0 +1,44 @@
+streamlit.service
+  s_7308d0443dd71a::t_9c5c416dc218b7 9,11-12
+llama-server.service
+  s_7308d0443dd71a::t_db221d7bf39a04 9-11
+pyproject.toml
+  s_7308d0443dd71a::t_4030c538dc82f1 6
+main.py
+  s_7308d0443dd71a::t_84d97a12ac8d1c 55
+app/mcp_agent_server.py
+  s_7308d0443dd71a::t_58ff70651b1768 292
+  s_7308d0443dd71a::t_b3a09eca5b3b75 2
+planning/2026-09-16_experimental_ocr_model_plan.md
+  s_7308d0443dd71a::t_38bc321a7e63c2 4
+docs/architecture/document-agent-architecture.html
+  s_7308d0443dd71a::t_87f3b777980409 1-15035
+README.md
+  s_7308d0443dd71a::t_e35a3788181526 29-30
+  s_7308d0443dd71a::t_4ae504413182db 5-6
+  s_7308d0443dd71a::t_bb952990140478 246
+  s_7308d0443dd71a::t_1ab005b0c8846d 1
+app/mcp_server.py
+  s_7308d0443dd71a::t_149bba4c260af4 49
+  s_7308d0443dd71a::t_e65f9a42f35500 2
+docs/architecture/ocr-model-comparison.visual-check.json
+  s_7308d0443dd71a::t_87f3b777980409 9
+uv.lock
+  s_7308d0443dd71a::t_0be6a73d90f250 627-679,705-713,994-995,1983-1994
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9f5dd86db262b55e4ceea4c63626e97f53410b5a",
+  "prompts": {},
+  "sessions": {
+    "s_7308d0443dd71a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f39177305ffeE2NCQsllFiBs9q",
+        "model": "unknown"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
