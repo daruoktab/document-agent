@@ -6,7 +6,7 @@ dengan fallback yang aman untuk local inference (LM Studio / Ollama / llama-serv
 
 Peran Model:
   1. VLM utama: klasifikasi, reasoning visual, specialist, dan quality gate
-  2. OCR       : ekstraksi Markdown dasar, grounding, dan region crop
+  2. OCR       : PaddleOCR-VL untuk layout, Markdown, dan region crop
   3. Logging   : konfigurasi level logging
 """
 
@@ -122,9 +122,7 @@ class Settings:
 
     # --- 1. VLM utama (reasoning + agent + quality gate) ---
     vlm_model: str = field(
-        default_factory=lambda: _env(
-            "VLM_MODEL", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
-        )
+        default_factory=lambda: _env("VLM_MODEL", "gemma-4-26b-vlm")
     )
     vlm_base_url: str = field(
         default_factory=lambda: _env_first(
@@ -175,6 +173,9 @@ class Settings:
     )
 
     # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
+    ocr_backend: str = field(
+        default_factory=lambda: _env("OCR_BACKEND", "paddleocr_vl").strip().lower()
+    )
     ocr_model: str = field(default_factory=lambda: _optional_env("OCR_MODEL"))
     ocr_base_url: str = field(
         default_factory=lambda: _env("OCR_BASE_URL", "http://127.0.0.1:8081/v1")
@@ -216,6 +217,9 @@ class Settings:
     )
     ocr_sparse_ink_ratio: float = field(
         default_factory=lambda: _float_env("OCR_SPARSE_INK_RATIO", "0.015")
+    )
+    textreflow_enabled: bool = field(
+        default_factory=lambda: _bool_env("TEXTREFLOW_ENABLED", "true")
     )
 
     # --- 3. Logging Configuration ---

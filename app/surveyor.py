@@ -244,7 +244,7 @@ def _detect_grid(ink: np.ndarray) -> ColumnGrid | None:
     utuh; mengukur di sepanjang badan tabel gagal karena garisnya terputus.
     """
     height, width = ink.shape
-    h_lines = _group(np.where(ink.sum(axis=1) > H_LINE_FRAC * width)[0])
+    h_lines = _group(np.where(ink.sum(axis=1) > H_LINE_FRAC * width)[0].tolist())
     if len(h_lines) < 3:
         return None
 
@@ -273,7 +273,9 @@ def _detect_grid(ink: np.ndarray) -> ColumnGrid | None:
         return None
 
     header = ink[header_top:header_bottom, :]
-    v_lines = _group(np.where(header.sum(axis=0) > V_LINE_FRAC * header.shape[0])[0])
+    v_lines = _group(
+        np.where(header.sum(axis=0) > V_LINE_FRAC * header.shape[0])[0].tolist()
+    )
     # Buang tepi hitam hasil scan: garis di batas citra bukan sekat kolom.
     v_lines = [
         v

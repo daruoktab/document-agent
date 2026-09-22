@@ -76,12 +76,28 @@ class PageInspectionResult(BaseModel):
 
 
 class OCRRegion(BaseModel):
-    """Satu region grounding hasil OCR yang sudah dipetakan ke piksel sumber."""
+    """Satu region layout OCR yang sudah dipetakan ke piksel sumber."""
 
     index: int = Field(..., ge=1)
     label: str = Field(default="unknown")
-    kind: Literal["text", "table", "figure", "unknown"] = Field(default="unknown")
+    kind: Literal[
+        "title",
+        "section",
+        "authors",
+        "text",
+        "list",
+        "caption",
+        "footnote",
+        "formula",
+        "table",
+        "figure",
+        "header",
+        "footer",
+        "unknown",
+    ] = Field(default="unknown")
     text: str = Field(default="")
+    lines: list[str] = Field(default_factory=list)
+    reading_order: int | None = Field(default=None, ge=1)
     bbox_model: tuple[float, float, float, float]
     bbox_pixels: tuple[int, int, int, int]
     crop_path: str | None = None
@@ -107,6 +123,7 @@ class OCRExtractionResult(BaseModel):
 
     status: Literal["success", "disabled", "error"] = Field(default="success")
     markdown: str = Field(default="")
+    source_markdown: str = Field(default="")
     raw_response: str = Field(default="")
     model: str = Field(default="")
     latency_ms: float = Field(default=0.0, ge=0.0)
@@ -128,6 +145,8 @@ class OCRExtractionResult(BaseModel):
     oriented_image_path: str | None = None
     native_text_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
     candidate_scores: dict[str, float] = Field(default_factory=dict)
+    textreflow_applied: bool = False
+    textreflow_reason: str | None = None
 
 
 class JudgeAuditDecision(BaseModel):
@@ -216,6 +235,8 @@ class PipelinePageResult(BaseModel):
     ocr_quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
     ocr_trust_level: Literal["high", "medium", "low"] = Field(default="low")
     ocr_risk_flags: list[str] = Field(default_factory=list)
+    textreflow_applied: bool = False
+    textreflow_reason: str | None = None
     rotation_degrees: Literal[0, 90, 180, 270] = 0
     vlm_visual_rescue: bool = Field(
         default=False,
