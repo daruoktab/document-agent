@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "jds-magang"
+name = "document-agent"
 version = "0.1.0"
 description = "Vision VLM & Document Text Extractor (Structured Markdown, SQLite Tabular, & Mermaid Diagrams)"
 requires-python = ">=3.12"

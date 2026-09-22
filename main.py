@@ -52,7 +52,7 @@ logger = logging.getLogger("app.cli")
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="jds-magang",
+        prog="document-agent",
         description="Ekstraksi dokumen berbasis VLM -> Markdown Terstruktur, Tabular SQLite Database, & Mermaid Diagrams.",
     )
     parser.add_argument(

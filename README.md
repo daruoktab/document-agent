@@ -1,9 +1,9 @@
-# jds-magang-document-extractor — OCR + Vision VLM Document Extractor
+# document-agent — OCR + Vision VLM Document Extractor
 
 Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Unlimited-OCR membuat draft dan grounding region, sedangkan Vision LLM utama menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
 
-> ℹ️ **Catatan Branch:** 
-> Branch `experiment/ocr-model-v2` memakai dua server llama.cpp: VLM utama dan OCR pada port terpisah. Jika `OCR_MODEL` kosong atau endpoint OCR gagal, ekstraksi otomatis fallback ke VLM utama. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
+> ℹ️ **Catatan Arsitektur:** 
+> Pipeline memakai dua server llama.cpp: VLM utama dan OCR pada port terpisah. Jika `OCR_MODEL` kosong atau endpoint OCR gagal, ekstraksi otomatis fallback ke VLM utama. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
 
 ---
 
@@ -26,8 +26,8 @@ Lihat [panduan pembelajaran dan perintah admin](docs/PEMBELAJARAN.md).
 
 ```bash
 # 1. Clone repositori
-git clone https://github.com/daruoktab/jds-magang-ocr-agent.git
-cd jds-magang-ocr-agent
+git clone https://github.com/daruoktab/document-agent.git
+cd document-agent
 
 # 2. Buat & aktifkan environment (contoh menggunakan Conda)
 conda create -n magang-jds python=3.12 -y
@@ -243,7 +243,7 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
 ```json
 {
   "mcpServers": {
-    "jds-magang-doc-agent": {
+    "document-agent": {
       "command": "python",
       "args": ["-m", "app.mcp_server"],
       "env": {

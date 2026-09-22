@@ -1,7 +1,7 @@
 # Implementasi Eksperimental Unlimited-OCR
 
 **Tanggal:** 2026-09-17  
-**Branch:** `experiment/ocr-model-v2`  
+**Branch:** `main` (sebelumnya `experiment/ocr-model-v2`, sudah di-merge)
 **Status:** Arsitektur inti sudah diimplementasikan; menunggu alias model dan pengujian server
 
 ## Sasaran

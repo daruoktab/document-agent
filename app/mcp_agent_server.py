@@ -1,5 +1,5 @@
 """
-MCP (Model Context Protocol) Server 'Agent Mode' untuk jds-magang-ocr-agent.
+MCP (Model Context Protocol) Server 'Agent Mode' untuk document-agent.
 
 Server ini dirancang untuk agent model dengan kemampuan vision bawaan
 (opencode, Claude Desktop, Cursor, dsb.) dan TIDAK memanggil endpoint model
@@ -289,7 +289,7 @@ def _build_image_result(
 
 # Inisialisasi Server MCP (Agent Mode)
 server = MCPServer(
-    name="jds-magang-doc-agent",
+    name="document-agent",
     description=(
         "Agent Mode Document Tools MCP Server (OCR/VLM/LLM endpoint NONAKTIF): "
         "alat bantu mekanis untuk agent vision — render dokumen (PPTX/PDF) menjadi gambar, "

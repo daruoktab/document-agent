@@ -6,7 +6,7 @@
   "status": "pass",
   "visualReview": "pending",
   "artifact": {
-    "path": "D:\\Codings\\jds-magang\\docs\\architecture\\ocr-model-comparison.html",
+    "path": "D:\\Codings\\document-agent\\docs\\architecture\\ocr-model-comparison.html",
     "sha256": "1ffa3f2b7e4851a2798a47ea2838e2a01d834d8244aedbb5f0b886ac4a5a6286",
     "bytes": 816225
   },

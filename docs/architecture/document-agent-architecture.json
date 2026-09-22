@@ -2,10 +2,10 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "Arsitektur jds-magang: ekstraksi dokumen berbasis VLM",
+    "title": "Arsitektur document-agent: ekstraksi dokumen berbasis VLM",
     "quality_profile": "showcase",
     "repository": {
-      "url": "https://github.com/daruoktab/jds-magang.git",
+      "url": "https://github.com/daruoktab/document-agent.git",
       "provider": "github",
       "link_mode": "local-only",
       "revision": "dc3f4f4be7144aa1533f551eec83c76a616b9e0f"

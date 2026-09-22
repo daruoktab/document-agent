@@ -6,9 +6,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/jds-magang-ocr-agent/model
-ExecStart=/bin/bash %h/jds-magang-ocr-agent/deploy/systemd/logged-exec.sh %h/jds-magang-ocr-agent/logs/llama-server.log /usr/local/bin/llama-server -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --mmproj mmproj-Qwen3.8-27B-BF16.gguf --jinja -ngl 999 -c 16384 --parallel 1 --host 0.0.0.0 --port 8080 --alias qwen-35b-vision --reasoning on --spec-type draft-mtp --spec-draft-n-max 4 --temp 0.1 --top-p 0.9 --top-k 20 --repeat-penalty 1.05
-ExecStartPost=%h/jds-magang-ocr-agent/.venv/bin/python %h/jds-magang-ocr-agent/deploy/systemd/wait-llama.py
+WorkingDirectory=%h/document-agent/model
+ExecStart=/bin/bash %h/document-agent/deploy/systemd/logged-exec.sh %h/document-agent/logs/llama-server.log /usr/local/bin/llama-server -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --mmproj mmproj-Qwen3.8-27B-BF16.gguf --jinja -ngl 999 -c 16384 --parallel 1 --host 0.0.0.0 --port 8080 --alias qwen-35b-vision --reasoning on --spec-type draft-mtp --spec-draft-n-max 4 --temp 0.1 --top-p 0.9 --top-k 20 --repeat-penalty 1.05
+ExecStartPost=%h/document-agent/.venv/bin/python %h/document-agent/deploy/systemd/wait-llama.py
 TimeoutStartSec=660
 TimeoutStopSec=60
 Restart=always

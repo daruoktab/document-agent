@@ -1,5 +1,5 @@
 """
-MCP (Model Context Protocol) Server untuk jds-magang.
+MCP (Model Context Protocol) Server untuk document-agent.
 
 Mengekspos alat-alat ekstraksi Vision VLM, PowerPoint parser, rendering slide ke gambar,
 multi-page PDF stitcher, pemindaian direktori dataset, ekstraksi massal, simulasi chunking,
@@ -46,7 +46,7 @@ from .tabular_db import (
 
 # Inisialisasi Server MCP
 server = MCPServer(
-    name="jds-magang-vlm-agent",
+    name="document-agent",
     description="Vision VLM Document Extractor MCP Server: PDF, DOCX, Excel, PPTX, Scan -> Markdown Terstruktur, SQLite Tabular Engine, & Mermaid Diagrams",
     version="0.1.0",
 )
