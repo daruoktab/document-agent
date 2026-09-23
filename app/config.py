@@ -179,6 +179,9 @@ class Settings:
     excel_tile_max_rows: int = field(
         default_factory=lambda: _int_env("EXCEL_TILE_MAX_ROWS", "40")
     )
+    excel_tile_max_native_tokens: int = field(
+        default_factory=lambda: _int_env("EXCEL_TILE_MAX_NATIVE_TOKENS", "1800")
+    )
 
     # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
     ocr_model: str = field(default_factory=lambda: _optional_env("OCR_MODEL"))

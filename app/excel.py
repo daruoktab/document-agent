@@ -9,6 +9,7 @@ satu per satu ke VLM.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import re
@@ -476,9 +477,29 @@ def survey_excel_workbook(
                         if anchor_value is not None:
                             occupied.add((row, column))
 
+            # A sheet-wide merged caption must not bridge independent tables
+            # separated by empty columns underneath it.
+            caption_components: list[set[tuple[int, int]]] = []
+            for merged_range in worksheet.merged_cells.ranges:
+                left, top, right, bottom = range_boundaries(str(merged_range))
+                if top != bottom or worksheet.cell(top, left).value is None:
+                    continue
+                columns_below = sorted({
+                    column for row, column in data_coordinates
+                    if row > bottom and left <= column <= right
+                })
+                if not any(
+                    second > first + 1
+                    for first, second in itertools.pairwise(columns_below)
+                ):
+                    continue
+                caption = {(top, column) for column in range(left, right + 1)}
+                occupied.difference_update(caption)
+                caption_components.append(caption)
+
             regions: list[ExcelRegion] = []
             components = sorted(
-                _connected_components(occupied),
+                [*_connected_components(occupied), *caption_components],
                 key=lambda component: (
                     min(row for row, _ in component),
                     min(column for _, column in component),
@@ -664,7 +685,7 @@ def survey_excel_workbook(
     )
 
 
-def _split_region_into_tiles(
+def _split_region_by_dimensions(
     region: ExcelRegion, settings: Settings
 ) -> list[ExcelRegion]:
     """Split an oversized Excel region while retaining repeated header evidence."""
@@ -740,6 +761,88 @@ def _split_region_into_tiles(
         max_rows,
     )
     return tiles or [region]
+
+
+class ExcelTileBudgetError(Exception):
+    """A single cell cannot fit the configured evidence budget."""
+
+
+def _estimate_native_tokens(text: str) -> int:
+    """Conservative local estimate, not the model's multimodal tokenizer."""
+    return (len(text.encode("utf-8")) + 2) // 3
+
+
+def _split_region_into_tiles(
+    region: ExcelRegion, settings: Settings
+) -> list[ExcelRegion]:
+    budget = max(1, settings.excel_tile_max_native_tokens)
+
+    def refine(candidate: ExcelRegion) -> list[ExcelRegion]:
+        if _estimate_native_tokens(candidate.native_text) <= budget:
+            return [candidate]
+        rows = sorted({cell.row for cell in candidate.cells})
+        columns = sorted({cell.column for cell in candidate.cells})
+        # Retain the existing three-row header convention when possible.
+        # Actual serialized evidence includes coordinates, values and formulas.
+        groups: list[list[ExcelCellEvidence]]
+        if len(rows) > 4:
+            headers = set(rows[:3])
+            middle = 3 + (len(rows) - 3) // 2
+            upper = set(rows[:middle])
+            lower = headers | set(rows[middle:])
+            groups = [
+                [cell for cell in candidate.cells if cell.row in selected]
+                for selected in (upper, lower)
+            ]
+        elif len(columns) > 1:
+            middle_column = columns[len(columns) // 2]
+            groups = [
+                [cell for cell in candidate.cells if cell.column < middle_column],
+                [cell for cell in candidate.cells if cell.column >= middle_column],
+            ]
+        elif len(rows) > 1:
+            # An oversized header cannot be repeated indefinitely. Keep all
+            # evidence in separate fragments rather than silently truncating it.
+            middle_row = rows[len(rows) // 2]
+            groups = [
+                [cell for cell in candidate.cells if cell.row < middle_row],
+                [cell for cell in candidate.cells if cell.row >= middle_row],
+            ]
+        else:
+            raise ExcelTileBudgetError(
+                f"Excel cell {candidate.sheet_name}!{candidate.cells[0].coordinate} "
+                f"exceeds native token budget {budget}; cannot split a single cell."
+            )
+        result: list[ExcelRegion] = []
+        for index, cells in enumerate(groups, 1):
+            left, right = min(c.column for c in cells), max(c.column for c in cells)
+            top, bottom = min(c.row for c in cells), max(c.row for c in cells)
+            cell_range = f"{_column_letter(left)}{top}:{_column_letter(right)}{bottom}"
+            child = candidate.model_copy(update={
+                "region_id": f"{candidate.region_id}_b{index}",
+                "parent_region_id": region.region_id,
+                "is_tile": True,
+                "min_row": top, "max_row": bottom,
+                "min_column": left, "max_column": right,
+                "cell_range": cell_range, "cells": cells,
+                "native_text": _region_native_text(
+                    sheet_name=candidate.sheet_name, cell_range=cell_range, cells=cells,
+                ),
+            })
+            result.extend(refine(child))
+        return result
+
+    tiles = [
+        child for tile in _split_region_by_dimensions(region, settings)
+        for child in refine(tile)
+    ]
+    if len(tiles) > 1:
+        logger.info(
+            "[Excel] %s: %d tiles, peak native estimate=%d tokens (budget=%d).",
+            region.region_id, len(tiles),
+            max(_estimate_native_tokens(tile.native_text) for tile in tiles), budget,
+        )
+    return tiles
 
 
 def split_excel_regions_into_tiles(
