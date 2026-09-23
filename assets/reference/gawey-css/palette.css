@@ -1,0 +1,16 @@
+/* Palette extracted from https://gawey.id/ on 2026-09-23.
+   Reference tokens; Streamlit uses the same colors in app/streamlit_logic.py. */
+:root {
+  --gawey-blue: #1b75bb;
+  --gawey-purple: #3f3f97;
+  --gawey-dark-blue: #20204c;
+  --gawey-light-blue: #76acd6;
+  --gawey-turquoise: #13b5c8;
+  --gawey-text: #3b3b3b;
+  --gawey-muted: #757575;
+  --gawey-border: #cdcdcd;
+  --gawey-silver: #c8c8c8;
+  --gawey-surface: #eaeaea;
+  --gawey-white: #ffffff;
+  --gawey-blue-purple-gradient: linear-gradient(90deg, #1b75bb, #3f3f97);
+}

@@ -117,49 +117,122 @@ def _set_workspace_page(page: str) -> None:
 
 
 def render_workspace_styles() -> None:
-    """Terapkan gaya antarmuka yang mengikuti tema Streamlit pengguna."""
+    """Terapkan palet Gawey sambil mempertahankan kontras tema Streamlit."""
     st.markdown(
         """
         <style>
+          :root {
+            --gawey-blue: #1b75bb;
+            --gawey-purple: #3f3f97;
+            --gawey-navy: #20204c;
+            --gawey-sky: #76acd6;
+            --gawey-turquoise: #13b5c8;
+            --gawey-outline: color-mix(in srgb, var(--gawey-blue) 44%, var(--text-color) 12%);
+            --gawey-panel: color-mix(in srgb, var(--secondary-background-color) 87%, var(--gawey-blue) 13%);
+          }
           [data-testid="stAppViewContainer"] {
-            background: linear-gradient(180deg, rgba(0, 75, 147, 0.035), transparent 22rem),
-                        var(--background-color);
+            background: linear-gradient(145deg,
+              color-mix(in srgb, var(--background-color) 82%, var(--gawey-blue) 18%),
+              var(--background-color) 35rem);
+          }
+          [data-testid="stHeader"] {
+            background: color-mix(in srgb, var(--background-color) 92%, var(--gawey-navy) 8%);
+            border-bottom: 1px solid var(--gawey-outline);
           }
           [data-testid="stSidebar"] {
-            border-right: 1px solid rgba(128, 128, 128, 0.18);
+            background: linear-gradient(170deg,
+              color-mix(in srgb, var(--background-color) 94%, var(--gawey-blue) 6%),
+              var(--background-color) 36rem);
+            border-right: 1px solid var(--gawey-outline);
+          }
+          [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label {
+            border-radius: 0.7rem;
+            padding: 0.22rem 0.5rem;
+            transition: background-color 120ms ease;
+          }
+          [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label:hover {
+            background: var(--gawey-panel);
+          }
+          [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) {
+            background: color-mix(in srgb, var(--secondary-background-color) 68%, var(--gawey-blue) 32%);
+            box-shadow: inset 3px 0 var(--gawey-turquoise);
+          }
+          [data-testid="stSidebar"] hr {
+            border-color: var(--gawey-outline);
+          }
+          [data-testid="stSidebar"] [data-testid="stExpander"] {
+            border: 1px solid var(--gawey-outline);
+            border-radius: 0.8rem;
           }
           [data-testid="stMetric"] {
-            background: var(--secondary-background-color);
-            border: 1px solid rgba(128, 128, 128, 0.2);
+            background: var(--gawey-panel);
+            border: 1px solid var(--gawey-outline);
+            border-top: 3px solid var(--gawey-blue);
             border-radius: 0.9rem;
             padding: 0.75rem 0.9rem;
+            box-shadow: 0 0.45rem 1.25rem color-mix(in srgb, var(--gawey-navy) 10%, transparent);
+          }
+          [data-testid="stMetricValue"] {
+            color: color-mix(in srgb, var(--text-color) 46%, var(--gawey-blue) 54%);
           }
           [data-testid="stButton"] > button,
           [data-testid="stDownloadButton"] > button {
             min-height: 2.65rem;
             border-radius: 0.7rem;
             font-weight: 600;
-            transition: border-color 120ms ease, transform 120ms ease;
+            border-color: var(--gawey-outline);
+            transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
           }
-          [data-testid="stButton"] > button:hover,
-          [data-testid="stDownloadButton"] > button:hover {
-            border-color: #f26f21;
+          [data-testid="stButton"] > button[kind="primary"],
+          [data-testid="stDownloadButton"] > button[kind="primary"] {
+            background: linear-gradient(100deg, var(--gawey-blue), var(--gawey-purple));
+            border-color: var(--gawey-blue);
+            color: #fff;
+          }
+          [data-testid="stButton"] > button:not(:disabled):hover,
+          [data-testid="stDownloadButton"] > button:not(:disabled):hover {
+            border-color: var(--gawey-turquoise);
+            background-color: var(--gawey-panel);
             transform: translateY(-1px);
           }
+          [data-testid="stButton"] > button[kind="primary"]:not(:disabled):hover,
+          [data-testid="stDownloadButton"] > button[kind="primary"]:not(:disabled):hover {
+            background: linear-gradient(100deg, var(--gawey-purple), var(--gawey-blue));
+            color: #fff;
+          }
+          [data-baseweb="input"] > div,
+          [data-baseweb="select"] > div,
+          [data-testid="stNumberInput"] > div {
+            border-color: var(--gawey-outline);
+          }
+          [data-baseweb="input"]:focus-within > div,
+          [data-baseweb="select"]:focus-within > div {
+            border-color: var(--gawey-blue);
+            box-shadow: 0 0 0 1px var(--gawey-blue);
+          }
+          [data-testid="stProgress"] [role="progressbar"] > div {
+            background: linear-gradient(90deg, var(--gawey-blue), var(--gawey-purple));
+          }
           [data-testid="stFileUploaderDropzone"] {
-            border: 1px dashed rgba(0, 75, 147, 0.5);
+            background: var(--gawey-panel);
+            border: 1px dashed var(--gawey-blue);
             border-radius: 0.9rem;
           }
           [data-testid="stTabs"] [role="tablist"] {
             gap: 0.35rem;
-            border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+            border-bottom: 1px solid var(--gawey-outline);
           }
           [data-testid="stTabs"] button[role="tab"] {
             border-radius: 0.65rem 0.65rem 0 0;
             padding-inline: 0.85rem;
           }
+          [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+            color: color-mix(in srgb, var(--text-color) 40%, var(--gawey-blue) 60%);
+            background: var(--gawey-panel);
+            border-bottom-color: var(--gawey-turquoise);
+          }
           :focus-visible {
-            outline: 3px solid #f26f21 !important;
+            outline: 3px solid color-mix(in srgb, var(--text-color) 25%, var(--gawey-turquoise) 75%) !important;
             outline-offset: 2px !important;
           }
           .workspace-brand {
@@ -186,15 +259,18 @@ def render_workspace_styles() -> None:
             margin: 0.25rem 0 1.25rem;
             padding: 1.65rem 1.8rem;
             overflow: hidden;
-            border: 1px solid rgba(0, 75, 147, 0.18);
+            border: 1px solid var(--gawey-outline);
             border-radius: 1.1rem;
-            background-color: #07365f;
-            background-image: linear-gradient(90deg, rgba(3, 35, 66, 0.92), rgba(3, 35, 66, 0.24)),
+            background-color: var(--gawey-navy);
+            background-image: linear-gradient(90deg,
+                              color-mix(in srgb, var(--gawey-navy) 92%, transparent),
+                              color-mix(in srgb, var(--gawey-blue) 66%, transparent) 63%,
+                              color-mix(in srgb, var(--gawey-purple) 22%, transparent)),
                               url("data:image/jpeg;base64,__HERO_IMAGE__");
             background-size: cover;
             background-position: center 56%;
             color: #fff;
-            box-shadow: 0 0.75rem 2rem rgba(3, 35, 66, 0.12);
+            box-shadow: 0 0.75rem 2rem color-mix(in srgb, var(--gawey-navy) 20%, transparent);
           }
           .workspace-hero__content { max-width: 46rem; }
           .workspace-hero__identity {
@@ -217,7 +293,7 @@ def render_workspace_styles() -> None:
           }
           .workspace-hero__eyebrow {
             margin: 0 0 0.35rem;
-            color: #ffd1ae;
+            color: #bceaf0;
             font-size: 0.76rem;
             font-weight: 700;
             letter-spacing: 0.11em;
@@ -1363,7 +1439,7 @@ def render_mermaid_html(mermaid_code: str, height: int = 420) -> None:
         body {{
           margin: 0;
           padding: 12px;
-          background: #f8fafc;
+          background: #eaeaea;
           border-radius: 8px;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           display: flex;
