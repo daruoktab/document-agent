@@ -421,36 +421,39 @@ def render_history_workspace(
     ]
     if not visible_batches:
         st.caption("Belum ada batch yang cocok dengan pencarian.")
-
-    for batch in visible_batches:
-        with st.container(border=True):
-            summary_col, open_col, delete_col = st.columns([4, 1.2, 1.2])
-            with summary_col:
-                st.markdown(f"**{batch['name']}**")
-                st.caption(
-                    f"{len(batch.get('documents', []))} file · "
-                    f"Diunggah {format_timestamp(batch.get('uploaded_at', batch.get('created_at')))}"
-                )
-            with open_col:
-                if st.button(
-                    "Buka batch",
-                    key=f"history_batch_{batch['id']}",
-                    use_container_width=True,
-                ):
-                    st.session_state["selected_batch_id"] = batch["id"]
-                    st.session_state["selected_stem"] = (
-                        batch["documents"][0]["stem"]
-                        if batch.get("documents")
-                        else None
-                    )
-                    st.rerun()
-            with delete_col:
-                if st.button(
-                    "Hapus",
-                    key=f"history_delete_batch_{batch['id']}",
-                    use_container_width=True,
-                ):
-                    _confirm_delete_batch(batch, output_dir)
+    else:
+        with st.container(
+            height=420 if len(visible_batches) > 3 else "content", border=False
+        ):
+            for batch in visible_batches:
+                with st.container(border=True):
+                    summary_col, open_col, delete_col = st.columns([4, 1.2, 1.2])
+                    with summary_col:
+                        st.markdown(f"**{batch['name']}**")
+                        st.caption(
+                            f"{len(batch.get('documents', []))} file · "
+                            f"Diunggah {format_timestamp(batch.get('uploaded_at', batch.get('created_at')))}"
+                        )
+                    with open_col:
+                        if st.button(
+                            "Buka batch",
+                            key=f"history_batch_{batch['id']}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["selected_batch_id"] = batch["id"]
+                            st.session_state["selected_stem"] = (
+                                batch["documents"][0]["stem"]
+                                if batch.get("documents")
+                                else None
+                            )
+                            st.rerun()
+                    with delete_col:
+                        if st.button(
+                            "Hapus",
+                            key=f"history_delete_batch_{batch['id']}",
+                            use_container_width=True,
+                        ):
+                            _confirm_delete_batch(batch, output_dir)
 
     selected_batch_id = st.session_state.get("selected_batch_id")
     selected_batch = next(
@@ -860,40 +863,41 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
     history_rows = [row for row in batch_rows if row["Status"] != "Diproses"]
 
     def render_batch_table(rows: list[dict[str, Any]], key_prefix: str) -> None:
-        header = st.columns([2.2, 1.1, 1.1, 2.2, 1, 2.2, 1.7, 0.8])
-        for column, label in zip(
-            header,
-            [
-                "Batch",
-                "Status",
-                "Selesai",
-                "File aktif",
-                "Progres",
-                "Tahap",
-                "Diunggah",
-                "Aksi",
-            ],
-            strict=True,
-        ):
-            column.markdown(f"**{label}**")
-        for index, row in enumerate(rows):
-            columns = st.columns([2.2, 1.1, 1.1, 2.2, 1, 2.2, 1.7, 0.8])
-            values = [
-                row["Batch"],
-                row["Status"],
-                row["File selesai"],
-                row["File sedang diproses"],
-                row["Progres file"],
-                row["Tahap"],
-                row["Diunggah"],
-            ]
-            for column, value in zip(columns[:-1], values, strict=True):
-                column.write(value)
-            if columns[-1].button("Buka", key=f"{key_prefix}_{index}"):
-                st.session_state["selected_batch_id"] = row["_batch_id"]
-                st.session_state["selected_stem"] = row["_first_stem"]
-                st.session_state["workspace_page"] = "Histori"
-                st.rerun()
+        with st.container(height=420 if len(rows) > 6 else "content", border=False):
+            header = st.columns([2.2, 1.1, 1.1, 2.2, 1, 2.2, 1.7, 0.8])
+            for column, label in zip(
+                header,
+                [
+                    "Batch",
+                    "Status",
+                    "Selesai",
+                    "File aktif",
+                    "Progres",
+                    "Tahap",
+                    "Diunggah",
+                    "Aksi",
+                ],
+                strict=True,
+            ):
+                column.markdown(f"**{label}**")
+            for index, row in enumerate(rows):
+                columns = st.columns([2.2, 1.1, 1.1, 2.2, 1, 2.2, 1.7, 0.8])
+                values = [
+                    row["Batch"],
+                    row["Status"],
+                    row["File selesai"],
+                    row["File sedang diproses"],
+                    row["Progres file"],
+                    row["Tahap"],
+                    row["Diunggah"],
+                ]
+                for column, value in zip(columns[:-1], values, strict=True):
+                    column.write(value)
+                if columns[-1].button("Buka", key=f"{key_prefix}_{index}"):
+                    st.session_state["selected_batch_id"] = row["_batch_id"]
+                    st.session_state["selected_stem"] = row["_first_stem"]
+                    st.session_state["workspace_page"] = "Histori"
+                    st.rerun()
 
     if active_rows:
         st.markdown("#### 🔄 Batch yang sedang diproses")
