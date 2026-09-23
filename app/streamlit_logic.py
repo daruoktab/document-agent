@@ -13,6 +13,7 @@ Fitur Utama:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -74,6 +75,567 @@ SPEC_OPTIONS: dict[str, str | None] = {
     "Jurnal dua kolom atau dua bahasa": "bilingual_journal",
     "Slide presentasi": "presentation_slides",
 }
+
+WORKSPACE_PAGES = ("Dashboard", "Upload", "Histori", "Dokumen")
+DOCUMENT_STATUS_LABELS = {
+    "queued": "Menunggu",
+    "running": "Diproses",
+    "paused": "Dijeda",
+    "completed": "Selesai",
+    "failed": "Gagal",
+    "canceled": "Dibatalkan",
+}
+
+
+@st.cache_data(show_spinner=False)
+def _load_brand_assets() -> tuple[str, str]:
+    """Muat aset merek lokal sebagai data URI untuk header dan navigasi."""
+    background_path = PROJECT_ROOT / "assets" / "balitower_bg.jpg"
+    logo_path = PROJECT_ROOT / "assets" / "balitower_mark.svg"
+    background = (
+        base64.b64encode(background_path.read_bytes()).decode("ascii")
+        if background_path.is_file()
+        else ""
+    )
+    logo = (
+        base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        if logo_path.is_file()
+        else ""
+    )
+    return background, logo
+
+
+def _sync_workspace_page() -> None:
+    """Sinkronkan pilihan navigasi dengan halaman workspace aktif."""
+    st.session_state["workspace_page"] = st.session_state["workspace_nav"]
+
+
+def _set_workspace_page(page: str) -> None:
+    """Arahkan pengguna ke halaman workspace yang diminta."""
+    if page in WORKSPACE_PAGES:
+        st.session_state["workspace_page"] = page
+
+
+def render_workspace_styles() -> None:
+    """Terapkan gaya antarmuka yang mengikuti tema Streamlit pengguna."""
+    st.markdown(
+        """
+        <style>
+          [data-testid="stAppViewContainer"] {
+            background: linear-gradient(180deg, rgba(0, 75, 147, 0.035), transparent 22rem),
+                        var(--background-color);
+          }
+          [data-testid="stSidebar"] {
+            border-right: 1px solid rgba(128, 128, 128, 0.18);
+          }
+          [data-testid="stMetric"] {
+            background: var(--secondary-background-color);
+            border: 1px solid rgba(128, 128, 128, 0.2);
+            border-radius: 0.9rem;
+            padding: 0.75rem 0.9rem;
+          }
+          [data-testid="stButton"] > button,
+          [data-testid="stDownloadButton"] > button {
+            min-height: 2.65rem;
+            border-radius: 0.7rem;
+            font-weight: 600;
+            transition: border-color 120ms ease, transform 120ms ease;
+          }
+          [data-testid="stButton"] > button:hover,
+          [data-testid="stDownloadButton"] > button:hover {
+            border-color: #f26f21;
+            transform: translateY(-1px);
+          }
+          [data-testid="stFileUploaderDropzone"] {
+            border: 1px dashed rgba(0, 75, 147, 0.5);
+            border-radius: 0.9rem;
+          }
+          [data-testid="stTabs"] [role="tablist"] {
+            gap: 0.35rem;
+            border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+          }
+          [data-testid="stTabs"] button[role="tab"] {
+            border-radius: 0.65rem 0.65rem 0 0;
+            padding-inline: 0.85rem;
+          }
+          :focus-visible {
+            outline: 3px solid #f26f21 !important;
+            outline-offset: 2px !important;
+          }
+          .workspace-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            margin: 0.25rem 0 0.75rem;
+            color: var(--text-color);
+            font-size: 1rem;
+            font-weight: 700;
+            line-height: 1.2;
+          }
+          .workspace-brand img {
+            width: 2.35rem;
+            height: 2.35rem;
+            border-radius: 0.65rem;
+            background: #fff;
+          }
+          .workspace-hero {
+            position: relative;
+            display: flex;
+            align-items: end;
+            min-height: 12rem;
+            margin: 0.25rem 0 1.25rem;
+            padding: 1.65rem 1.8rem;
+            overflow: hidden;
+            border: 1px solid rgba(0, 75, 147, 0.18);
+            border-radius: 1.1rem;
+            background-color: #07365f;
+            background-image: linear-gradient(90deg, rgba(3, 35, 66, 0.92), rgba(3, 35, 66, 0.24)),
+                              url("data:image/jpeg;base64,__HERO_IMAGE__");
+            background-size: cover;
+            background-position: center 56%;
+            color: #fff;
+            box-shadow: 0 0.75rem 2rem rgba(3, 35, 66, 0.12);
+          }
+          .workspace-hero__content { max-width: 46rem; }
+          .workspace-hero__identity {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.85rem;
+          }
+          .workspace-hero__identity img {
+            width: 2.8rem;
+            height: 2.8rem;
+            padding: 0.2rem;
+            border-radius: 0.7rem;
+            background: #fff;
+          }
+          .workspace-hero__identity span {
+            color: rgba(255, 255, 255, 0.92);
+            font-size: 0.9rem;
+            font-weight: 600;
+          }
+          .workspace-hero__eyebrow {
+            margin: 0 0 0.35rem;
+            color: #ffd1ae;
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 0.11em;
+            text-transform: uppercase;
+          }
+          .workspace-hero h1 {
+            margin: 0;
+            color: #fff;
+            font-size: clamp(1.6rem, 3vw, 2.25rem);
+            line-height: 1.15;
+          }
+          .workspace-hero p {
+            max-width: 42rem;
+            margin: 0.6rem 0 0;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 0.98rem;
+            line-height: 1.55;
+          }
+          @media (max-width: 700px) {
+            .workspace-hero {
+              min-height: 10rem;
+              padding: 1.25rem;
+              background-position: 62% center;
+            }
+            [data-testid="stTabs"] [role="tablist"] { flex-wrap: wrap; }
+          }
+        </style>
+        """.replace("__HERO_IMAGE__", _load_brand_assets()[0]),
+        unsafe_allow_html=True,
+    )
+
+
+def render_history_workspace(
+    all_docs: Sequence[dict[str, Any]],
+    batches: Sequence[dict[str, Any]],
+    job_manager: JobManager,
+    output_dir: Path,
+) -> None:
+    """Tampilkan pencarian dokumen dan navigasi batch dari satu halaman."""
+    st.subheader("Histori dokumen dan batch")
+    st.caption("Cari pekerjaan, lihat statusnya, lalu buka hasil atau monitor batch.")
+
+    search_col, status_col = st.columns([2, 1], gap="medium")
+    with search_col:
+        query = st.text_input(
+            "Cari nama file atau dokumen",
+            key="document_search",
+            placeholder="Contoh: laporan, invoice, kontrak",
+        ).casefold()
+    with status_col:
+        status_filter = st.selectbox(
+            "Filter status",
+            ["all", *DOCUMENT_STATUS_LABELS],
+            format_func=lambda value: DOCUMENT_STATUS_LABELS.get(
+                value, "Semua status"
+            ),
+            key="document_status_filter",
+        )
+
+    visible_docs = [
+        doc
+        for doc in all_docs
+        if query in doc["stem"].casefold()
+        and (status_filter == "all" or doc["status"] == status_filter)
+    ]
+    st.caption(f"Menampilkan {len(visible_docs)} dari {len(all_docs)} dokumen.")
+    if visible_docs:
+        current = st.session_state.get("selected_stem")
+        options: list[str | None] = [None, *[doc["stem"] for doc in visible_docs]]
+        if current and current not in options:
+            options.append(current)
+        if st.session_state.get("history_document_select") not in options:
+            st.session_state["history_document_select"] = current
+        doc_by_stem = {doc["stem"]: doc for doc in all_docs}
+        selected = st.selectbox(
+            "Buka dokumen",
+            options,
+            format_func=lambda stem: (
+                "Pilih dokumen..."
+                if stem is None
+                else f"{DOCUMENT_STATUS_LABELS.get(doc_by_stem.get(stem, {}).get('status', ''), 'Tidak diketahui')} · {stem}"
+            ),
+            key="history_document_select",
+        )
+        if selected and st.button(
+            "Buka dokumen terpilih",
+            type="primary",
+            key="history_open_document",
+        ):
+            st.session_state["selected_stem"] = selected
+            st.session_state["selected_batch_id"] = None
+            st.session_state["workspace_page"] = "Dokumen"
+            st.rerun()
+    elif all_docs:
+        st.info("Tidak ada dokumen yang cocok dengan pencarian dan filter status.")
+    else:
+        st.info("Belum ada dokumen di histori. Unggah dokumen untuk memulai.")
+        st.button(
+            "📤 Buka halaman upload",
+            type="primary",
+            key="history_empty_upload",
+            on_click=_set_workspace_page,
+            args=("Upload",),
+        )
+
+    st.markdown("### Batch upload")
+    batch_query = st.text_input(
+        "Cari batch",
+        key="batch_search",
+        placeholder="Nama batch atau nama file di dalamnya",
+    ).casefold()
+    visible_batches = [
+        batch
+        for batch in batches
+        if not batch_query
+        or batch_query
+        in (
+            batch["name"]
+            + " "
+            + " ".join(
+                doc.get("source_name", doc["stem"])
+                for doc in batch.get("documents", [])
+            )
+        ).casefold()
+    ]
+    if not visible_batches:
+        st.caption("Belum ada batch yang cocok dengan pencarian.")
+
+    for batch in visible_batches:
+        with st.container(border=True):
+            summary_col, open_col, delete_col = st.columns([4, 1.2, 1.2])
+            with summary_col:
+                st.markdown(f"**{batch['name']}**")
+                st.caption(
+                    f"{len(batch.get('documents', []))} file · "
+                    f"Diunggah {format_timestamp(batch.get('uploaded_at', batch.get('created_at')))}"
+                )
+            with open_col:
+                if st.button(
+                    "Buka batch",
+                    key=f"history_batch_{batch['id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state["selected_batch_id"] = batch["id"]
+                    st.session_state["selected_stem"] = (
+                        batch["documents"][0]["stem"]
+                        if batch.get("documents")
+                        else None
+                    )
+                    st.rerun()
+            with delete_col:
+                if st.button(
+                    "Hapus",
+                    key=f"history_delete_batch_{batch['id']}",
+                    use_container_width=True,
+                ):
+                    _confirm_delete_batch(batch, output_dir)
+
+    selected_batch_id = st.session_state.get("selected_batch_id")
+    selected_batch = next(
+        (batch for batch in batches if batch["id"] == selected_batch_id), None
+    )
+    if selected_batch:
+        st.markdown("---")
+        st.markdown("### Rincian batch terpilih")
+        render_batch_download(selected_batch, output_dir)
+        render_batch_monitor(
+            [doc["stem"] for doc in selected_batch["documents"]], output_dir
+        )
+
+
+def render_upload_workspace(
+    *,
+    output_dir: Path,
+    job_manager: JobManager,
+    chosen_spec: str | None,
+    dpi_val: int,
+    force_all_tbl: bool,
+) -> None:
+    """Tampilkan alur upload, peninjauan antrean, dan pemrosesan batch."""
+    st.subheader("Unggah dokumen baru")
+    st.caption(
+        "Pilih file atau folder, tinjau urutan antrean, lalu mulai ekstraksi. "
+        "Mendukung PDF, DOCX/DOC, Excel, PPTX/PPT, PNG, JPG, dan WebP."
+    )
+    with st.container(border=True):
+        uploaded_files = st.file_uploader(
+            "Pilih satu atau beberapa file",
+            type=SUPPORTED_TYPES,
+            accept_multiple_files=True,
+            key="document_files_uploader",
+            help="Anda dapat memilih beberapa dokumen sekaligus.",
+        )
+        uploaded_directory = st.file_uploader(
+            "Atau pilih satu folder",
+            type=SUPPORTED_TYPES,
+            accept_multiple_files="directory",
+            key="document_directory_uploader",
+            help=(
+                "File dengan format yang didukung di dalam folder, termasuk subfolder, "
+                "akan ditambahkan ke antrean."
+            ),
+        )
+
+    # File dan folder digabung agar seluruh pilihan tetap masuk ke satu batch.
+    uploaded_files = list(uploaded_files or []) + list(uploaded_directory or [])
+    if not uploaded_files:
+        st.info("File yang dipilih akan muncul di sini sebelum Anda memulai ekstraksi.")
+        return
+
+    saved_files = _save_staged_uploaded_files(uploaded_files, output_dir)
+    st.markdown(f"### Tinjau antrean · {len(saved_files)} file")
+    with st.container(border=True):
+        if len(saved_files) > 1:
+            st.markdown("#### Prioritas pemrosesan")
+            st.caption(
+                "Pilih file yang mendapat urutan pertama saat slot ekstraksi tersedia."
+            )
+            priority_options = {path.name: path for path in saved_files}
+            priority_name = st.selectbox(
+                "File yang diproses lebih dulu",
+                list(priority_options),
+                key="upload_priority_selector",
+            )
+            priority_path = priority_options[priority_name]
+            ordered_files = [
+                priority_path,
+                *[path for path in saved_files if path != priority_path],
+            ]
+        else:
+            priority_path = saved_files[0]
+            ordered_files = saved_files
+
+        batch_name = st.text_input(
+            "Nama batch",
+            value="Uploaded files",
+            help="Nama ini membantu Anda menemukan kelompok hasil di histori.",
+        )
+        uploaded_rows = []
+        for queue_position, path in enumerate(ordered_files, start=1):
+            existing_job = job_manager.get_job(path.stem, output_dir=output_dir)
+            uploaded_rows.append(
+                {
+                    "Urutan": "⭐ Prioritas" if path == priority_path else queue_position,
+                    "File": path.name,
+                    "Ukuran": f"{path.stat().st_size / 1024:.1f} KB",
+                    "Status": existing_job.status if existing_job else "Siap diproses",
+                }
+            )
+        st.dataframe(
+            pd.DataFrame(uploaded_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if st.button(
+            f"🚀 Mulai ekstraksi · {len(saved_files)} file",
+            type="primary",
+            use_container_width=True,
+            key="start_uploaded_batch",
+        ):
+            documents = [
+                {"stem": path.stem, "source_name": path.name}
+                for path in ordered_files
+            ]
+            batch = create_batch(output_dir, batch_name, documents)
+            st.session_state["selected_batch_id"] = batch["id"]
+            started_jobs = []
+            for queue_position, saved_file in enumerate(ordered_files):
+                job = job_manager.start_job(
+                    input_path=saved_file,
+                    output_dir=output_dir,
+                    doc_type=chosen_spec,
+                    dpi=dpi_val,
+                    force_all_tables=force_all_tbl,
+                    queue_position=queue_position,
+                )
+                started_jobs.append(job)
+
+            if started_jobs:
+                _clear_staged_uploads()
+                st.session_state["selected_stem"] = started_jobs[0].job_id
+                st.session_state["batch_upload_stems"] = [
+                    job.job_id for job in started_jobs
+                ]
+                st.session_state["workspace_page"] = "Dokumen"
+                st.rerun()
+
+
+def render_document_workspace(stem: str | None, output_dir: Path) -> None:
+    """Render monitor atau hasil sesuai status dokumen yang dipilih."""
+    if not stem:
+        st.info("Pilih dokumen dari histori atau unggah dokumen baru.")
+        col_history, col_upload = st.columns(2)
+        with col_history:
+            st.button(
+                "Buka histori",
+                use_container_width=True,
+                on_click=_set_workspace_page,
+                args=("Histori",),
+            )
+        with col_upload:
+            st.button(
+                "Unggah dokumen",
+                type="primary",
+                use_container_width=True,
+                on_click=_set_workspace_page,
+                args=("Upload",),
+            )
+        return
+
+    job_manager = JobManager.get_instance()
+    job = job_manager.get_job(stem, output_dir=output_dir)
+    if job is not None and job.status in {"queued", "running", "paused"}:
+        render_live_monitor(stem, output_dir)
+    elif job is not None and job.status == "completed":
+        render_completed_document_view(stem, output_dir)
+    elif job is not None and job.status in {"failed", "canceled"}:
+        if job.status == "canceled":
+            st.warning("Proses ekstraksi dibatalkan.")
+        else:
+            st.error("Ekstraksi dokumen gagal.")
+            if job.error_message:
+                st.error(job.error_message)
+            if job.latest_log_path:
+                st.caption(f"Lokasi log lengkap: `{job.latest_log_path.resolve()}`")
+
+        st.markdown("#### Log terakhir")
+        st.code(
+            job_manager.get_latest_logs(stem, line_count=40),
+            language="text",
+        )
+        retry_col, upload_col = st.columns(2)
+        with retry_col:
+            if st.button(
+                "🔄 Coba ekstrak ulang",
+                type="primary",
+                use_container_width=True,
+            ):
+                job_manager.restart_job(stem, output_dir=output_dir)
+                st.rerun()
+        with upload_col:
+            st.button(
+                "Unggah dokumen lain",
+                use_container_width=True,
+                on_click=_set_workspace_page,
+                args=("Upload",),
+            )
+    else:
+        candidate_uploads = list((output_dir / "uploads").glob(f"{stem}.*"))
+        if candidate_uploads:
+            input_file = candidate_uploads[0]
+            st.info(f"Dokumen siap diekstrak: **{input_file.name}**")
+            if st.button("🚀 Mulai ekstraksi", type="primary"):
+                settings = _current_extraction_settings()
+                job_manager.start_job(
+                    input_path=input_file,
+                    output_dir=output_dir,
+                    doc_type=settings[0],
+                    dpi=settings[1],
+                    force_all_tables=settings[2],
+                )
+                st.rerun()
+        else:
+            st.warning(f"Dokumen `{stem}` tidak ditemukan di workspace.")
+            st.button(
+                "Kembali ke histori",
+                on_click=_set_workspace_page,
+                args=("Histori",),
+            )
+
+
+def _current_extraction_settings() -> tuple[str | None, int, bool]:
+    """Baca pilihan sidebar yang dipakai saat memulai pekerjaan tertunda."""
+    spec_label = st.session_state.get(
+        "spec_label", next(iter(SPEC_OPTIONS))
+    )
+    return (
+        SPEC_OPTIONS.get(spec_label),
+        int(st.session_state.get("dpi_val", 200)),
+        bool(st.session_state.get("force_all_tbl", False)),
+    )
+
+
+def render_workspace_header(page: str) -> None:
+    """Tampilkan header visual sesuai bagian workspace yang sedang dibuka."""
+    background, logo = _load_brand_assets()
+    descriptions = {
+        "Dashboard": ("Ruang kerja dokumen", "Pantau pekerjaan dan antrean ekstraksi."),
+        "Upload": ("Mulai pekerjaan baru", "Unggah satu atau beberapa dokumen untuk diproses."),
+        "Histori": ("Arsip pemrosesan", "Cari batch dan dokumen yang pernah masuk ke workspace."),
+        "Dokumen": ("Pemeriksaan hasil", "Pantau proses atau tinjau hasil ekstraksi dokumen."),
+    }
+    eyebrow, description = descriptions.get(page, descriptions["Dashboard"])
+    title = "Pengolah Dokumen AI"
+    if not background:
+        st.title(title)
+        st.caption(description)
+        return
+    identity = (
+        f'<div class="workspace-hero__identity"><img src="data:image/svg+xml;base64,{logo}" '
+        'alt="Logo BaliTower"><span>Ruang kerja dokumen</span></div>'
+        if logo
+        else ""
+    )
+    st.markdown(
+        f"""
+        <section class="workspace-hero" aria-label="Header workspace">
+          <div class="workspace-hero__content">
+            {identity}
+            <div class="workspace-hero__eyebrow">{eyebrow}</div>
+            <h1>{title}</h1>
+            <p>{description}</p>
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def format_timestamp(value: str | None) -> str:
@@ -254,6 +816,7 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
             if columns[-1].button("Buka", key=f"{key_prefix}_{index}"):
                 st.session_state["selected_batch_id"] = row["_batch_id"]
                 st.session_state["selected_stem"] = row["_first_stem"]
+                st.session_state["workspace_page"] = "Histori"
                 st.rerun()
 
     if active_rows:
@@ -833,12 +1396,7 @@ def render_mermaid_html(mermaid_code: str, height: int = 420) -> None:
 def render_batch_monitor(stems: list[str], output_path: Path) -> None:
     """Tampilkan semua hasil upload batch agar dokumen selain yang aktif tetap terlihat."""
     job_manager = JobManager.get_instance()
-    st.markdown(
-        '<h3 style="color:#f1f5f9 !important; opacity:1;">'
-        "Dokumen dalam batch upload"
-        "</h3>",
-        unsafe_allow_html=True,
-    )
+    st.subheader("Dokumen dalam batch upload")
     labels = {
         "queued": "Menunggu antrean",
         "running": "Sedang diproses",
@@ -913,6 +1471,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
                     b_open, b_act = action_col.columns([1, 1])
                     if b_open.button("Buka", key=f"batch_open_{index}", use_container_width=True):
                         st.session_state["selected_stem"] = stem
+                        st.session_state["workspace_page"] = "Dokumen"
                         st.rerun()
                     act_triggered = False
                     if job_item.status == "running":
@@ -950,13 +1509,11 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
                 else:
                     if action_col.button("Buka", key=f"batch_open_{index}", use_container_width=True):
                         st.session_state["selected_stem"] = stem
+                        st.session_state["workspace_page"] = "Dokumen"
                         st.rerun()
-    st.markdown(
-        '<div style="color:#cbd5e1 !important; opacity:1; font-size:0.85rem;">'
+    st.caption(
         "Setiap file memiliki hasil Markdown sendiri. Pilih Buka untuk melihat hasil, "
         "progres, dan lognya."
-        "</div>",
-        unsafe_allow_html=True,
     )
 
 
@@ -982,11 +1539,7 @@ def render_active_ingest_status(output_path: Path) -> None:
         )
     else:
         status_text = "✅ Tidak ada ingest aktif"
-    st.markdown(
-        f'<div style="text-align:right;color:#64748b;font-size:0.85rem;">'
-        f"{status_text}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"**{status_text}**")
 
 
 @st.fragment(run_every=2)
@@ -1595,339 +2148,97 @@ def main() -> None:
     output_dir = PROJECT_ROOT / "output"
     job_manager = JobManager.get_instance()
     job_manager.resume_pending_jobs(output_dir)
+    st.session_state.setdefault("selected_stem", None)
+    st.session_state.setdefault("selected_batch_id", None)
+    st.session_state.setdefault("workspace_page", "Dashboard")
+    if st.session_state["workspace_page"] not in WORKSPACE_PAGES:
+        st.session_state["workspace_page"] = "Dashboard"
+    if st.session_state.get("workspace_nav") != st.session_state["workspace_page"]:
+        st.session_state["workspace_nav"] = st.session_state["workspace_page"]
 
-    # Inisialisasi session state
-    if "selected_stem" not in st.session_state:
-        st.session_state["selected_stem"] = None
+    all_docs = job_manager.list_all_documents(output_dir=output_dir)
+    batches = list_batches(output_dir)
+    render_workspace_styles()
 
-    # Sidebar: Konfigurasi Pipeline & Navigasi Dokumen
     with st.sidebar:
-        st.title("📑 Pengolah Dokumen AI")
-        st.caption(
-            "Ubah PDF, presentasi, dan gambar menjadi teks serta tabel yang siap digunakan."
+        _, logo = _load_brand_assets()
+        if logo:
+            st.markdown(
+                '<div class="workspace-brand">'
+                f'<img src="data:image/svg+xml;base64,{logo}" alt="Logo BaliTower">'
+                "<span>Pengolah Dokumen AI</span></div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.title("📑 Pengolah Dokumen AI")
+        st.caption("Unggah, pantau, dan tinjau hasil dokumen dalam satu workspace.")
+        st.radio(
+            "Navigasi workspace",
+            WORKSPACE_PAGES,
+            key="workspace_nav",
+            format_func=lambda page: {
+                "Dashboard": "🏠  Dashboard",
+                "Upload": "📤  Upload",
+                "Histori": "🗂️  Histori",
+                "Dokumen": "📄  Dokumen aktif",
+            }[page],
+            on_change=_sync_workspace_page,
         )
-
-        all_docs = job_manager.list_all_documents(output_dir=output_dir)
-
-        batches = list_batches(output_dir)
-        with st.expander("Histori batch", expanded=False):
-            batch_query = st.text_input(
-                "Cari batch atau nama file", key="batch_search"
-            ).casefold()
-            for batch in batches:
-                if (
-                    batch_query
-                    and batch_query
-                    not in (
-                        batch["name"]
-                        + " "
-                        + " ".join(
-                            doc.get("source_name", doc["stem"])
-                            for doc in batch["documents"]
-                        )
-                    ).casefold()
-                ):
-                    continue
-                with st.container(border=True):
-                    st.markdown(
-                        f"**{batch['name']}** · {len(batch['documents'])} file · "
-                        f"{format_timestamp(batch.get('uploaded_at', batch.get('created_at')))}"
-                    )
-                    st.caption(
-                        f"Diunggah {format_timestamp(batch.get('uploaded_at', batch.get('created_at')))}"
-                    )
-                    if st.button("Buka batch", key=f"history_batch_{batch['id']}"):
-                        st.session_state["selected_batch_id"] = batch["id"]
-                        st.session_state["selected_stem"] = (
-                            batch["documents"][0]["stem"]
-                            if batch["documents"]
-                            else None
-                        )
-                        st.rerun()
-                    if st.button(
-                        "🗑️ Hapus batch",
-                        key=f"history_delete_batch_{batch['id']}",
-                        use_container_width=True,
-                    ):
-                        _confirm_delete_batch(batch, output_dir)
-            if not batches:
-                st.caption(
-                    "Batch upload baru akan tercatat di sini, termasuk setelah restart."
-                )
-
-        st.markdown("### Histori dokumen")
-        query = st.text_input("Cari nama dokumen", key="document_search").casefold()
-        status_labels = {
-            "queued": "Menunggu",
-            "running": "Diproses",
-            "paused": "Dijeda",
-            "completed": "Selesai",
-            "failed": "Gagal",
-            "canceled": "Dibatalkan",
-        }
-        status_filter = st.selectbox(
-            "Filter status",
-            ["all", *status_labels],
-            format_func=lambda value: status_labels.get(value, "Semua status"),
-        )
-        visible_docs = [
-            doc
-            for doc in all_docs
-            if query in doc["stem"].casefold()
-            and (status_filter == "all" or doc["status"] == status_filter)
-        ]
-        options = [None, *[doc["stem"] for doc in visible_docs]]
-        current = st.session_state.get("selected_stem")
-        if current and current not in options:
-            options.append(current)
-        doc_by_stem = {doc["stem"]: doc for doc in all_docs}
-
-        def document_label(stem: str | None) -> str:
-            if stem is None:
-                return "➕ Unggah dokumen baru"
-            doc = doc_by_stem.get(stem, {})
-            return f"{status_labels.get(doc.get('status', ''), 'Tidak diketahui')} · {stem}"
-
-        chosen_stem = st.selectbox(
-            "Pilih dokumen",
-            options,
-            index=options.index(current),
-            format_func=document_label,
-        )
-        st.caption(
-            f"{len(visible_docs)} dari {len(all_docs)} dokumen · antrean aktif di atas, lalu terbaru"
-        )
-        if chosen_stem != current:
-            st.session_state["selected_stem"] = chosen_stem
-            st.session_state["selected_batch_id"] = None
-            st.rerun()
-        if st.button("Upload baru"):
-            _clear_staged_uploads()
-            st.session_state["selected_stem"] = None
-            st.session_state["selected_batch_id"] = None
-            st.rerun()
 
         st.markdown("---")
         st.header("⚙️ Pengaturan ekstraksi")
         spec_label = st.selectbox(
-            "Bentuk dokumen:",
+            "Bentuk dokumen",
             list(SPEC_OPTIONS.keys()),
+            key="spec_label",
             help="Biarkan pilihan otomatis jika Anda tidak yakin.",
         )
         chosen_spec = SPEC_OPTIONS[spec_label]
-
-        with st.expander("Pengaturan Lanjutan", expanded=False):
+        with st.expander("Pengaturan lanjutan", expanded=False):
             dpi_val = st.slider(
-                "Ketajaman gambar (PDF/PPT):",
+                "Ketajaman gambar (PDF/PPT)",
                 100,
                 300,
                 200,
                 25,
+                key="dpi_val",
                 help="Nilai lebih tinggi dapat membantu dokumen kecil atau buram, tetapi prosesnya lebih lama.",
             )
             force_all_tbl = st.checkbox(
                 "Simpan semua jenis tabel",
                 value=False,
+                key="force_all_tbl",
                 help="Aktifkan jika tabel deskriptif juga perlu disimpan sebagai data terstruktur.",
             )
-
-        st.markdown("---")
         if st.button("🔄 Segarkan histori", use_container_width=True):
             st.rerun()
 
-    status_col = st.columns([8, 2])[1]
-    with status_col:
-        render_active_ingest_status(output_dir)
+    workspace_page = st.session_state["workspace_page"]
+    render_workspace_header(workspace_page)
+    render_active_ingest_status(output_dir)
 
-    # Dashboard utama selalu terlihat, termasuk ketika user sedang berada di
-    # halaman upload atau membuka detail salah satu dokumen.
-    render_main_dashboard(output_dir, batches)
-
-    active_stem = st.session_state.get("selected_stem")
-    selected_batch = next(
-        (
-            batch
-            for batch in batches
-            if batch["id"] == st.session_state.get("selected_batch_id")
-        ),
-        None,
-    )
-    if selected_batch:
-        render_batch_download(selected_batch, output_dir)
-        render_batch_monitor(
-            [doc["stem"] for doc in selected_batch["documents"]], output_dir
-        )
-
-    if active_stem is None:
-        # MODE 1: UNGGAH DOKUMEN BARU
-        st.subheader("📤 Unggah Dokumen Baru")
-        st.caption(
-            "1. Pilih file atau folder · 2. Tentukan file prioritas utama (jika >1 file) · 3. Mulai ekstraksi. "
-            "Mendukung PDF, DOCX/DOC, Excel, PPTX/PPT, PNG, JPG, dan WebP."
-        )
-
-        uploaded_files = st.file_uploader(
-            "Pilih satu atau beberapa file:",
-            type=SUPPORTED_TYPES,
-            accept_multiple_files=True,
-            key="document_files_uploader",
-            help="Pilih beberapa PDF, DOCX/DOC, Excel, PPT/PPTX, PNG, JPG, atau WebP sekaligus.",
-        )
-        uploaded_directory = st.file_uploader(
-            "Atau pilih satu folder:",
-            type=SUPPORTED_TYPES,
-            accept_multiple_files="directory",
-            key="document_directory_uploader",
-            help=(
-                "Semua file yang didukung di dalam folder (termasuk subfolder) "
-                "akan dimasukkan ke antrean ingest. Pilihan folder dapat digabung "
-                "dengan pilihan file di atas."
-            ),
-        )
-
-        # Streamlit/browser hanya menyediakan satu dialog folder per widget.
-        # Gabungkan hasil folder dengan file biasa agar semuanya dapat diproses
-        # melalui tombol yang sama, tanpa mengubah pipeline ingest.
-        uploaded_files = list(uploaded_files or []) + list(uploaded_directory or [])
-
-        if uploaded_files:
-            saved_files = _save_staged_uploaded_files(uploaded_files, output_dir)
-            st.markdown(f"#### 📋 {len(saved_files)} File Siap Diproses")
-            if len(saved_files) > 1:
-                with st.container(border=True):
-                    st.markdown("##### ⭐ Prioritas Pemrosesan File")
-                    st.caption(
-                        "File yang Anda pilih sebagai prioritas akan diproses pertama kali "
-                        "pada slot ekstraksi VLM, mendahului file lainnya dalam antrean."
-                    )
-                    priority_options = {path.name: path for path in saved_files}
-                    priority_name = st.selectbox(
-                        "Pilih file yang diproses lebih dulu:",
-                        list(priority_options),
-                        key="upload_priority_selector",
-                        help="File ini ditempatkan di urutan #1 (prioritas tertinggi).",
-                    )
-                    priority_path = priority_options[priority_name]
-                    ordered_files = [
-                        priority_path,
-                        *[path for path in saved_files if path != priority_path],
-                    ]
-            else:
-                priority_path = saved_files[0]
-                ordered_files = saved_files
-
-            batch_name = st.text_input("Nama kelompok hasil (batch)", value="Uploaded files")
-            uploaded_rows = []
-            for path in ordered_files:
-                existing_job = job_manager.get_job(path.stem, output_dir=output_dir)
-                is_pri = (path == priority_path)
-                uploaded_rows.append(
-                    {
-                        "Prioritas": "⭐ Utama (#1)" if is_pri else f"Antrean #{ordered_files.index(path) + 1}",
-                        "File": path.name,
-                        "Ukuran": f"{path.stat().st_size / 1024:.1f} KB",
-                        "Status": existing_job.status if existing_job else "siap",
-                    }
-                )
-            st.dataframe(
-                pd.DataFrame(uploaded_rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            if st.button(
-                f"🚀 Mulai Ekstraksi {len(saved_files)} File",
+    if workspace_page == "Dashboard":
+        if not batches:
+            st.button(
+                "📤 Unggah dokumen pertama",
+                key="dashboard_upload_first",
                 type="primary",
-                use_container_width=True,
-            ):
-                documents = [
-                    {"stem": path.stem, "source_name": path.name}
-                    for path in ordered_files
-                ]
-                batch = create_batch(output_dir, batch_name, documents)
-                st.session_state["selected_batch_id"] = batch["id"]
-                started_jobs = []
-                for queue_position, saved_file in enumerate(ordered_files):
-                    job = job_manager.start_job(
-                        input_path=saved_file,
-                        output_dir=output_dir,
-                        doc_type=chosen_spec,
-                        dpi=dpi_val,
-                        force_all_tables=force_all_tbl,
-                        queue_position=queue_position,
-                    )
-                    started_jobs.append(job)
-
-                # Buka monitor file pertama; semua file tetap berjalan di background.
-                if started_jobs:
-                    _clear_staged_uploads()
-                    st.session_state["selected_stem"] = started_jobs[0].job_id
-                    st.session_state["batch_upload_stems"] = [
-                        job.job_id for job in started_jobs
-                    ]
-                    st.rerun()
-
-    else:
-        # MODE 2: DOKUMEN AKTIF DIPILIH
-        job = job_manager.get_job(active_stem, output_dir=output_dir)
-
-        if job is not None and job.status in {"queued", "running", "paused"}:
-            render_live_monitor(active_stem, output_dir)
-
-        elif job is not None and job.status == "completed":
-            render_completed_document_view(active_stem, output_dir)
-
-        elif job is not None and job.status in ("failed", "canceled"):
-            if job.status == "canceled":
-                st.warning("⚠️ **Proses ekstraksi telah dibatalkan oleh pengguna.**")
-            else:
-                st.error("❌ **Terjadi Kesalahan saat Ekstraksi Dokumen**")
-                if job.error_message:
-                    st.error(f"Detail Kesalahan: {job.error_message}")
-                if job.latest_log_path:
-                    st.info(
-                        f"📂 **Lokasi Log Lengkap:** `{job.latest_log_path.resolve()}`"
-                    )
-
-            st.markdown("##### 📜 Log Terakhir Sebelum Berhenti:")
-            st.code(
-                job_manager.get_latest_logs(active_stem, line_count=40),
-                language="text",
+                on_click=_set_workspace_page,
+                args=("Upload",),
             )
-
-            col_f1, col_f2 = st.columns([1, 1])
-            with col_f1:
-                if st.button(
-                    "🔄 Coba Ekstrak Ulang", type="primary", use_container_width=True
-                ):
-                    job_manager.restart_job(active_stem, output_dir=output_dir)
-                    st.rerun()
-            with col_f2:
-                if st.button(
-                    "➕ Beralih ke Unggah Dokumen Lain", use_container_width=True
-                ):
-                    st.session_state["selected_stem"] = None
-                    st.rerun()
-
-        else:
-            candidate_uploads = list((output_dir / "uploads").glob(f"{active_stem}.*"))
-            if candidate_uploads:
-                input_file = candidate_uploads[0]
-                st.info(f"📄 File siap diekstrak: **{input_file.name}**")
-                if st.button("🚀 Mulai Ekstraksi Sekarang", type="primary"):
-                    job_manager.start_job(
-                        input_path=input_file,
-                        output_dir=output_dir,
-                        doc_type=chosen_spec,
-                        dpi=dpi_val,
-                        force_all_tables=force_all_tbl,
-                    )
-                    st.rerun()
-            else:
-                st.warning(f"Dokumen `{active_stem}` tidak ditemukan dalam sistem.")
-                if st.button("⬅️ Kembali ke Unggah Dokumen"):
-                    st.session_state["selected_stem"] = None
-                    st.rerun()
+        render_main_dashboard(output_dir, batches)
+    elif workspace_page == "Upload":
+        render_upload_workspace(
+            output_dir=output_dir,
+            job_manager=job_manager,
+            chosen_spec=chosen_spec,
+            dpi_val=dpi_val,
+            force_all_tbl=force_all_tbl,
+        )
+    elif workspace_page == "Histori":
+        render_history_workspace(all_docs, batches, job_manager, output_dir)
+    else:
+        render_document_workspace(st.session_state.get("selected_stem"), output_dir)
 
 
 if __name__ == "__main__":

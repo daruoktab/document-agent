@@ -4,6 +4,7 @@ Unit tests untuk helper UI Streamlit: pemecahan halaman Markdown, ekstraksi diag
 
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from io import BytesIO
@@ -11,6 +12,8 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from app.streamlit_logic import (
+    WORKSPACE_PAGES,
+    _load_brand_assets,
     _save_uploaded_file,
     build_document_zip,
     extract_mermaid_blocks,
@@ -43,6 +46,17 @@ class TestStreamlitHelpers(unittest.TestCase):
     def test_format_timestamp_handles_iso_and_missing_values(self) -> None:
         self.assertEqual(format_timestamp(None), "—")
         self.assertIn("17 Sep 2026", format_timestamp("2026-09-17T07:32:08+00:00"))
+
+    def test_workspace_has_distinct_primary_destinations(self) -> None:
+        self.assertEqual(WORKSPACE_PAGES, ("Dashboard", "Upload", "Histori", "Dokumen"))
+
+    def test_local_brand_assets_are_loadable(self) -> None:
+        background, logo = _load_brand_assets()
+
+        self.assertTrue(background)
+        self.assertTrue(logo)
+        self.assertTrue(base64.b64decode(background).startswith(b"\xff\xd8\xff"))
+        self.assertIn(b"<svg", base64.b64decode(logo))
 
     def test_split_markdown_by_pages_pdf_format(self) -> None:
         raw_md = (
