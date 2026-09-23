@@ -481,7 +481,7 @@ class JobManager:
                             slot_path.unlink()
                             logger.warning(
                                 "Menghapus slot ekstraksi usang dari job %s (PID %s).",
-                                owner.get("job_id", "tidak diketahui"),
+                                (owner or {}).get("job_id", "tidak diketahui"),
                                 owner_pid,
                             )
                             break
