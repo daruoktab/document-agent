@@ -1,5 +1,5 @@
 [Unit]
-Description=Unlimited OCR Server
+Description=PaddleOCR-VL 1.6 Recognizer
 After=network.target
 Wants=streamlit.service
 StartLimitIntervalSec=0
@@ -7,7 +7,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=%h/jds-magang-ocr-agent/model
-ExecStart=/bin/bash %h/jds-magang-ocr-agent-v2/logged-exec.sh %h/jds-magang-ocr-agent-v2/logs/ocr-server.log /usr/local/bin/llama-server -m Unlimited-OCR-Q8_0.gguf --mmproj mmproj-Unlimited-OCR-F16.gguf --device none --mmproj-device none --jinja -ngl 0 --ctx-size 4096 --parallel 1 --host 0.0.0.0 --port 8081 --alias unlimited-ocr --reasoning off --ubatch-size 2048 --batch-size 2048 --temp 0.1 --top-p 0.9 --top-k 20 --repeat-penalty 1.1
+ExecStart=/bin/bash %h/jds-magang-ocr-agent-v2/logged-exec.sh %h/jds-magang-ocr-agent-v2/logs/ocr-server.log /usr/local/bin/llama-server -m PaddleOCR-VL-1.6-GGUF.gguf --mmproj PaddleOCR-VL-1.6-GGUF-mmproj.gguf --device CUDA0 --mmproj-device CUDA0 --jinja -ngl 99 --ctx-size 4096 --parallel 1 --host 0.0.0.0 --port 8081 --alias paddleocr-vl-1.6 --reasoning off --ubatch-size 2048 --batch-size 2048 --temp 0.0 --top-p 0.9 --top-k 20 --repeat-penalty 1.0
 ExecStartPost=%h/jds-magang-ocr-agent/.venv/bin/python %h/jds-magang-ocr-agent-v2/wait-ocr.py
 TimeoutStartSec=660
 TimeoutStopSec=60

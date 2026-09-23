@@ -168,6 +168,7 @@ class PaddleOCRVLExtractor:
             factory = PaddleOCRVL
         self._pipeline = factory(
             pipeline_version="v1.6",
+            device="gpu:0",
             vl_rec_backend="llama-cpp-server",
             vl_rec_server_url=self.base_url,
             vl_rec_api_model_name=self.model_name,

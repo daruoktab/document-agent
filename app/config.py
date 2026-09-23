@@ -122,7 +122,7 @@ class Settings:
 
     # --- 1. VLM utama (reasoning + agent + quality gate) ---
     vlm_model: str = field(
-        default_factory=lambda: _env("VLM_MODEL", "gemma-4-26b-vlm")
+        default_factory=lambda: _env("VLM_MODEL", "gemma-4-12b-vlm")
     )
     vlm_base_url: str = field(
         default_factory=lambda: _env_first(

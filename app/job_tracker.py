@@ -381,6 +381,35 @@ class JobManager:
         return payload if isinstance(payload, dict) else None
 
     @staticmethod
+    def _slot_owner_is_active(owner: dict[str, Any]) -> bool:
+        """Check the process identity, since an old PID can be reused after restart."""
+        subprocess_pid = owner.get("subprocess_pid")
+        pid = subprocess_pid or owner.get("launcher_pid")
+        if not isinstance(pid, int) or not is_pid_alive(pid):
+            return False
+        try:
+            import psutil
+        except ImportError:
+            return is_pid_alive(pid)
+        try:
+            process = psutil.Process(pid)
+            start_key = "subprocess_start_time" if subprocess_pid else "launcher_start_time"
+            expected_start = owner.get(start_key)
+            if isinstance(expected_start, (int, float)):
+                return abs(process.create_time() - expected_start) < 1
+
+            # Legacy slot files did not record process start time. A live kernel
+            # worker or unrelated process with the same PID does not own the slot.
+            command = process.cmdline()
+            if subprocess_pid:
+                return str(PROJECT_ROOT / "main.py") in command and any(
+                    Path(argument).stem == owner.get("job_id") for argument in command
+                )
+            return bool(command)
+        except (psutil.Error, OSError, ValueError):
+            return False
+
+    @staticmethod
     def _write_slot_owner(
         slot_path: Path, job: JobInfo, *, subprocess_pid: int | None
     ) -> None:
@@ -389,9 +418,24 @@ class JobManager:
             "job_id": job.job_id,
             "launcher_pid": os.getpid(),
             "subprocess_pid": subprocess_pid,
+            "launcher_start_time": JobManager._pid_start_time(os.getpid()),
+            "subprocess_start_time": JobManager._pid_start_time(subprocess_pid),
             "updated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         }
         slot_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    @staticmethod
+    def _pid_start_time(pid: int | None) -> float | None:
+        if pid is None:
+            return None
+        try:
+            import psutil
+        except ImportError:
+            return None
+        try:
+            return psutil.Process(pid).create_time()
+        except (psutil.Error, OSError, ValueError):
+            return None
 
     def _acquire_execution_slot(self, job: JobInfo) -> Path | None:
         """Dapatkan slot lintas thread/proses lewat file lock yang otomatis dapat dipulihkan."""
@@ -423,9 +467,16 @@ class JobManager:
                         os.O_CREAT | os.O_EXCL | os.O_WRONLY,
                     )
                 except FileExistsError:
-                    owner = self._read_slot_owner(slot_path) or {}
-                    owner_pid = owner.get("subprocess_pid") or owner.get("launcher_pid")
-                    if isinstance(owner_pid, int) and not is_pid_alive(owner_pid):
+                    owner = self._read_slot_owner(slot_path)
+                    if owner is None:
+                        # Another worker may still be writing the new lock.
+                        try:
+                            if time.time() - slot_path.stat().st_mtime < 10:
+                                continue
+                        except FileNotFoundError:
+                            break
+                    owner_pid = (owner or {}).get("subprocess_pid") or (owner or {}).get("launcher_pid")
+                    if owner is None or not self._slot_owner_is_active(owner):
                         try:
                             slot_path.unlink()
                             logger.warning(
@@ -448,6 +499,7 @@ class JobManager:
                         "job_id": job.job_id,
                         "launcher_pid": os.getpid(),
                         "subprocess_pid": None,
+                        "launcher_start_time": self._pid_start_time(os.getpid()),
                         "updated_at": dt.datetime.now(dt.UTC).isoformat(
                             timespec="seconds"
                         ),

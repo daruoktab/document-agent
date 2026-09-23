@@ -1,6 +1,6 @@
 # document-agent — OCR + Vision VLM Document Extractor
 
-Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Pipeline resmi PaddleOCR-VL membuat draft dan region layout melalui recognizer GGUF, TextReflow memperbaiki prosa satu/dua kolom yang memenuhi guard, sedangkan Gemma 4 menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
+Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Pipeline resmi PaddleOCR-VL membuat draft dan region layout melalui recognizer GGUF, TextReflow memperbaiki prosa satu/dua kolom yang memenuhi guard, sedangkan Gemma 4 12B menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
 
 > ℹ️ **Catatan Arsitektur:**
 > Pipeline memakai dua server llama.cpp: Gemma pada port 8080 dan recognizer PaddleOCR-VL GGUF pada port 8081. Layout analyzer PaddleOCR berjalan di proses aplikasi. Jika `OCR_MODEL` kosong atau OCR gagal, ekstraksi otomatis fallback ke Gemma. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
@@ -48,7 +48,7 @@ Buat berkas `.env` di direktori utama repositori. Model OCR sengaja boleh dikoso
 
 ```env
 BASE_URL=http://127.0.0.1:8080/v1
-VLM_MODEL=gemma-4-26b-vlm
+VLM_MODEL=gemma-4-12b-vlm
 VLM_ENABLE_THINKING=false
 VLM_VISUAL_RESCUE=true
 VLM_TEMPERATURE=0.1
@@ -249,7 +249,7 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
       "args": ["-m", "app.mcp_server"],
       "env": {
         "BASE_URL": "http://127.0.0.1:8080/v1",
-        "VLM_MODEL": "gemma-4-26b-vlm",
+        "VLM_MODEL": "gemma-4-12b-vlm",
         "OCR_BASE_URL": "http://127.0.0.1:8081/v1",
         "OCR_BACKEND": "paddleocr_vl",
         "OCR_MODEL": "paddleocr-vl-1.6"

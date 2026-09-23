@@ -22,12 +22,13 @@ dependencies = [
     "pydantic>=2",
     "Pillow>=10",
     "openpyxl>=3.1",
+    "psutil>=5",
     "pymupdf>=1.24",
     "pymupdf4llm>=0.0.17",
     "python-pptx>=1.0.2",
     "pymmdc>=0.1.0",
     "paddleocr[doc-parser]>=3.6,<3.7",
-    "paddlepaddle>=3.2.1",
+    "paddlepaddle-gpu==3.3.0",
     "mcp>=1.0.0",
     "requests>=2",
     "streamlit>=1.40",
@@ -36,3 +37,11 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-cu130" }
+
+[[tool.uv.index]]
+name = "paddle-cu130"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu130/"
+explicit = true
