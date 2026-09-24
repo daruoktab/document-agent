@@ -1,0 +1,63 @@
+research_excel_ingestion/findings_pipeline_validation.md
+  s_2f7adb793b19b3::t_f9924744940801 3-4
+  s_2f7adb793b19b3::t_18184f8fee52f5 1-2,5-189
+tests/test_qc_fixes.py
+  s_2f7adb793b19b3::t_c182da5dffde02 6,61,64,69,71
+  s_2f7adb793b19b3::t_d1897cc8693a21 54-60,62-63,65-68,70,72-75
+tests/test_excel_regions.py
+  s_2f7adb793b19b3::t_9f7d969b28bfb1 223-257
+  s_2f7adb793b19b3::t_634da7bc326eab 12,14,148-193,221-222,258-283,285-288,290-293,315
+  s_2f7adb793b19b3::t_90cbe0fef0f566 308-313
+  s_2f7adb793b19b3::t_3c1d3af13e8738 284,294-307,314,316-328
+  s_2f7adb793b19b3::t_c182da5dffde02 7,395
+  s_2f7adb793b19b3::t_61c703ce1f4b50 1-2,103-115,289
+  s_7308d0443dd71a::t_203e69b27f3cbb 116-117,329
+  s_2f7adb793b19b3::t_65369d2f88aaca 13,194-220
+  s_2f7adb793b19b3::t_d1897cc8693a21 382-394,396-422
+research_excel_ingestion/findings_region_detection.md
+  s_2f7adb793b19b3::t_1d6e16b539d7ff 1-235
+research_excel_ingestion/findings_native_structure.md
+  s_2f7adb793b19b3::t_8d72ea66765f64 1-84
+research_excel_ingestion/research_report.md
+  s_2f7adb793b19b3::t_148ec3c6450dca 1-54
+app/excel.py
+  s_2f7adb793b19b3::t_61e2ecb5115c0c 425-430
+  s_2f7adb793b19b3::t_d1897cc8693a21 1470-1497,2000-2022,2049-2064
+  s_2f7adb793b19b3::t_012466adf2ef32 297,306-311,316-353,397-408,415-416,436-466
+  s_2f7adb793b19b3::t_d3e28ca4219e5f 1427-1430,1442-1446,1452-1453,1456-1457
+  s_2f7adb793b19b3::t_b57840fb26f24b 828,842,847-855,865
+  s_2f7adb793b19b3::t_f440be2dcf2043 1149,1151-1158
+  s_2f7adb793b19b3::t_d773d497cdb59e 2315
+  s_7308d0443dd71a::t_3249caccf99071 467-468
+  s_2f7adb793b19b3::t_34f14f5f16dd2e 354-396,409-414,417-424,431-435
+  s_2f7adb793b19b3::t_05b288bd43437b 1393-1422,1447-1451
+  s_2f7adb793b19b3::t_cb305b843504e0 905-951,954-961,964,967-987,1046,1050-1055
+app/tabular_db.py
+  s_2f7adb793b19b3::t_d1897cc8693a21 2606-2612,2614-2620,2625-2627,2629-2632
+research_excel_ingestion/research_plan.md
+  s_2f7adb793b19b3::t_a30edf7ad115c5 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7445a065c92962d10a10d52e27349fc2953430aa",
+  "prompts": {},
+  "sessions": {
+    "s_2f7adb793b19b3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c743-7450-7612-86fe-b95c49ccfb77",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    },
+    "s_7308d0443dd71a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f39177305ffeE2NCQsllFiBs9q",
+        "model": "unknown"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
