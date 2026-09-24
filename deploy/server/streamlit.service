@@ -12,7 +12,7 @@ Environment="PATH=%h/document-agent/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/
 Environment="BASE_URL=http://127.0.0.1:8080/v1"
 Environment="VLM_MODEL=gemma-4-12b-vlm"
 Environment="VLM_ENABLE_THINKING=false"
-Environment="VLM_MAX_TOKENS=4096"
+Environment="VLM_MAX_TOKENS=2048"
 Environment="OCR_BASE_URL=http://127.0.0.1:8081/v1"
 Environment="OCR_BACKEND=paddleocr_vl"
 Environment="OCR_MODEL=paddleocr-vl-1.6"

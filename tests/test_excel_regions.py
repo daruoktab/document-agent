@@ -10,16 +10,20 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table
 
 from app.config import Settings
 from app.excel import (
+    ExcelTileBudgetError,
     _convert_excel_regions_to_pdf,
     _convert_workbook_to_xlsx_copy,
+    _estimate_native_tokens,
     compose_excel_markdown,
     persist_excel_native_data,
     plan_excel_visual_regions,
+    split_excel_regions_into_tiles,
     survey_excel_workbook,
 )
 from app.pdf import pdf_page_count
@@ -60,6 +64,79 @@ class TestExcelRegionSurvey(unittest.TestCase):
         chart.anchor = "A5"
         dashboard.add_chart(chart)
         workbook.save(path)
+
+    def test_token_budget_splits_dense_cells_without_losing_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dense.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            for row in range(1, 15):
+                sheet.cell(row, 1, f"Row {row}")
+                sheet.cell(row, 2, "=SUM(" + ",".join(["12345"] * 30) + ")")
+            workbook.save(path)
+            survey = survey_excel_workbook(path)
+            settings = Settings(excel_tile_max_native_tokens=450)
+            tiled = split_excel_regions_into_tiles(survey, settings)
+            regions = tiled.sheets[0].regions
+            self.assertGreater(len(regions), 1)
+            self.assertTrue(all(_estimate_native_tokens(r.native_text) <= 450 for r in regions))
+            expected = {c.coordinate: c.formula for r in survey.sheets[0].regions for c in r.cells}
+            actual = {c.coordinate: c.formula for r in regions for c in r.cells}
+            self.assertEqual(actual, expected)
+            with self.assertRaises(ExcelTileBudgetError):
+                split_excel_regions_into_tiles(survey, Settings(excel_tile_max_native_tokens=10))
+
+    def test_merged_caption_does_not_bridge_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "caption.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.merge_cells("A1:N1")
+            sheet["A1"] = "Shared caption"
+            for column, marker in ((1, "LEFT"), (9, "RIGHT")):
+                for row in range(2, 40):
+                    for offset in range(4):
+                        sheet.cell(row, column + offset, f"{marker}{row}_{offset}")
+            workbook.save(path)
+            survey = survey_excel_workbook(path)
+            regions = survey.sheets[0].regions
+            self.assertEqual([r.cell_range for r in regions], ["A1:N1", "A2:D39", "I2:L39"])
+            self.assertNotIn("RIGHT", regions[1].native_text)
+            self.assertNotIn("LEFT", regions[2].native_text)
+
+    @unittest.skipUnless(_find_libreoffice_binary(), "LibreOffice tidak tersedia")
+    def test_vertical_tiles_render_only_their_rows(self) -> None:
+        import pymupdf
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "tall.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.column_dimensions["A"].width = 24
+            for row in range(1, 45):
+                sheet.cell(row, 1, f"MARKER{row:03d}")
+                sheet.cell(row, 2, row)
+            workbook.save(path)
+            settings = Settings(excel_tile_max_columns=8, excel_tile_max_rows=20)
+            survey = split_excel_regions_into_tiles(
+                survey_excel_workbook(path, settings=settings), settings,
+            )
+            regions = survey.sheets[0].regions
+            pdf = root / "tiles.pdf"
+            self.assertTrue(_convert_excel_regions_to_pdf(
+                path, pdf, root / "profile", regions,
+            ))
+            with pymupdf.open(pdf) as document:
+                self.assertEqual(len(document), len(regions))
+                for page, region in zip(document, regions, strict=True):
+                    text = page.get_text()
+                    expected_rows = {cell.row for cell in region.cells}
+                    for row in range(1, 45):
+                        self.assertEqual(
+                            f"MARKER{row:03d}" in text, row in expected_rows,
+                            f"{region.region_id}: wrong presence of row {row}",
+                        )
 
     def _build_side_by_side_workbook(self, path: Path) -> None:
         workbook = Workbook()
@@ -453,6 +530,35 @@ class TestExcelRegionSurvey(unittest.TestCase):
             self.assertIn(str(csv_path), markdown)
             self.assertIn("Sheet pendukung", markdown)
             self.assertEqual(sections[0][0], "Visual")
+
+    def test_wide_region_is_tiled_and_can_be_combined(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wide.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Wide"
+            for column in range(1, 25):
+                sheet.cell(1, column, f"H{column}")
+                for row_number in range(2, 35):
+                    sheet.cell(row_number, column, row_number * column)
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path, settings=Settings(
+                excel_tile_max_columns=12,
+                excel_tile_max_rows=40,
+            ))
+            tiled = split_excel_regions_into_tiles(survey, Settings(
+                excel_tile_max_columns=12,
+                excel_tile_max_rows=40,
+            ))
+            regions = tiled.sheets[0].regions
+            self.assertGreaterEqual(len(regions), 2)
+            self.assertTrue(all(region.is_tile for region in regions))
+            self.assertEqual({region.parent_region_id for region in regions}, {"s001_r001"})
+            self.assertEqual(
+                {cell.coordinate for region in regions for cell in region.cells},
+                {f"{get_column_letter(column)}{row}" for column in range(1, 25) for row in range(1, 35)},
+            )
 
     @unittest.skipUnless(_find_libreoffice_binary(), "LibreOffice tidak tersedia")
     def test_region_renderer_produces_one_page_per_region(self) -> None:
