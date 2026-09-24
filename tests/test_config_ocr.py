@@ -14,7 +14,7 @@ class TestOCRSettings(unittest.TestCase):
         self.assertEqual(settings.base_url, "http://127.0.0.1:8080/v1")
         self.assertEqual(
             settings.vlm_model,
-            "gemma-4-26b-vlm",
+            "gemma-4-12b-vlm",
         )
         self.assertEqual(settings.ocr_backend, "paddleocr_vl")
         self.assertEqual(settings.ocr_model, "")

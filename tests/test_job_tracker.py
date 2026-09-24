@@ -250,6 +250,69 @@ class TestJobTracker(unittest.TestCase):
         manager._release_execution_slot(slot_path, job.run_id)
         self.assertFalse(slot_path.exists())
 
+    def test_execution_slot_recovers_reused_live_pid(self) -> None:
+        manager = JobManager.get_instance()
+        job = JobInfo(
+            job_id="slot_test",
+            file_name="slot_test.pdf",
+            input_path=self.temp_dir / "slot_test.pdf",
+            output_dir=self.temp_dir,
+            out_file=self.temp_dir / "slot_test.md",
+            db_file=None,
+            log_path=self.log_dir / "slot_test.log",
+            latest_log_path=self.log_dir / "slot_test_latest.log",
+            status_file=self.log_dir / "slot_test_status.json",
+            progress_file=self.log_dir / "slot_test_progress.txt",
+        )
+        slot_path = self.temp_dir / ".extraction_slot.json"
+        slot_path.write_text(
+            json.dumps({
+                "run_id": "old-run",
+                "job_id": "old-job",
+                "launcher_pid": os.getpid(),
+                "subprocess_pid": os.getpid(),
+            }),
+            encoding="utf-8",
+        )
+
+        acquired = manager._acquire_execution_slot(job)
+
+        self.assertEqual(acquired, slot_path)
+        owner = manager._read_slot_owner(slot_path)
+        self.assertIsNotNone(owner)
+        assert owner is not None
+        self.assertEqual(owner["run_id"], job.run_id)
+        manager._release_execution_slot(slot_path, job.run_id)
+
+    def test_execution_slot_does_not_remove_fresh_incomplete_lock(self) -> None:
+        manager = JobManager.get_instance()
+        job = JobInfo(
+            job_id="slot_test",
+            file_name="slot_test.pdf",
+            input_path=self.temp_dir / "slot_test.pdf",
+            output_dir=self.temp_dir,
+            out_file=self.temp_dir / "slot_test.md",
+            db_file=None,
+            log_path=self.log_dir / "slot_test.log",
+            latest_log_path=self.log_dir / "slot_test_latest.log",
+            status_file=self.log_dir / "slot_test_status.json",
+            progress_file=self.log_dir / "slot_test_progress.txt",
+        )
+        slot_path = self.temp_dir / ".extraction_slot.json"
+        slot_path.write_text("", encoding="utf-8")
+        acquired: list[Path | None] = []
+        worker = threading.Thread(target=lambda: acquired.append(manager._acquire_execution_slot(job)))
+        worker.start()
+        time.sleep(0.05)
+        self.assertTrue(worker.is_alive())
+        self.assertTrue(slot_path.exists())
+
+        slot_path.unlink()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(acquired, [slot_path])
+        manager._release_execution_slot(slot_path, job.run_id)
+
     def test_execution_slot_waits_until_active_job_releases(self) -> None:
         manager = JobManager.get_instance()
 
