@@ -1,0 +1,38 @@
+app/schemas.py
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 1034-1037
+deploy/server/streamlit.service
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 15
+wait-ocr.py
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 1-4,6,12-15,17-18,29-31,37-38,44
+  s_2f7adb793b19b3::t_eacd24567436bc 7-9,11,16,19-28,32-36,39-43
+  s_2f7adb793b19b3::t_f2ab394a730e12 5,10
+tests/test_extraction_retry.py
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 1-47
+app/extractor.py
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 433-447
+app/config.py
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 174-182
+tests/test_excel_regions.py
+  s_2f7adb793b19b3::t_6f272dd3996c6f 13
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 19,22,26,68-140,534-561
+  s_2f7adb793b19b3::t_8f6008f7fc6acb 562
+app/excel.py
+  s_2f7adb793b19b3::t_27dd2bfa16dfb5 45-50,1192-1435,1497-1500,1577,1579-1581,1590-1598,2168-2176,2219,2420,2625
+  s_2f7adb793b19b3::t_6f272dd3996c6f 2570-2574,2576-2586,2588,2591
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9fe18ba6d656e4128d231150fe7150db6b29a623",
+  "prompts": {},
+  "sessions": {
+    "s_2f7adb793b19b3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c743-7450-7612-86fe-b95c49ccfb77",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
