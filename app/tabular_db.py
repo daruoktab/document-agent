@@ -32,6 +32,13 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+ROW_ROLE_SQL_GUIDANCE = (
+    "Tabel native Excel dapat memiliki kolom `row_role` bernilai 'data', 'subtotal', "
+    "atau 'grand_total'. Untuk SUM/COUNT/AVG gunakan `WHERE row_role = 'data'` agar "
+    "baris agregat bawaan workbook tidak terhitung dua kali; baris 'subtotal'/'grand_total' "
+    "hanya dipakai untuk validasi silang hasil perhitungan."
+)
+
 logger = logging.getLogger("app.tabular_db")
 _active_connection: ContextVar[tuple[str, sqlite3.Connection] | None] = ContextVar("tabular_transaction", default=None)
 
@@ -1923,6 +1930,14 @@ class TabularDatabaseManager:
                     "row_count": cnt,
                     "samples": samples,
                 }
+                if any(column.get("name") == "row_role" for column in cols):
+                    role_cur = conn.execute(
+                        f"SELECT row_role, COUNT(*) AS cnt FROM '{t}' GROUP BY row_role;"
+                    )
+                    table_details[t]["row_role_counts"] = {
+                        str(row["row_role"]): row["cnt"] for row in role_cur.fetchall()
+                    }
+                    table_details[t]["aggregation_note"] = ROW_ROLE_SQL_GUIDANCE
 
         return {
             "database_path": str(self.db_path),

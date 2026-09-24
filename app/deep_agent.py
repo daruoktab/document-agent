@@ -42,6 +42,7 @@ from .ppt import process_presentation_vision
 from .preprocess import preprocess_image
 from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
 from .tabular_db import (
+    ROW_ROLE_SQL_GUIDANCE,
     TabularDatabaseManager,
     TabularVerifier,
     classify_table_heuristic,
@@ -200,7 +201,7 @@ def build_deep_agent(
         excel_path: str,
         forced_specs: str | None = None,
     ) -> str:
-        """Ekstrak workbook Excel/ODS dengan mengonversinya ke PDF, merender tiap halaman menjadi gambar, lalu menjalankan pipeline VLM dan SQLite yang sama seperti PDF."""
+        """Ekstrak workbook Excel/ODS secara native-first: nilai sel, formula, grafik, dan tabel dibaca dari struktur workbook lalu disimpan ke SQLite (dengan kolom row_role); hanya dashboard/gambar yang dirender untuk VLM."""
         res = process_multipage_excel(
             excel_path,
             pipeline=pipeline,
@@ -267,7 +268,7 @@ def build_deep_agent(
 
     @tool
     def query_sqlite_database(query: str, db_path: str | None = None) -> str:
-        """Eksekusi query SELECT analitik SQL pada database SQLite dokumen secara aman."""
+        """Eksekusi query SELECT analitik SQL pada database SQLite dokumen secara aman. Bila tabel memiliki kolom row_role, agregasi wajib memakai WHERE row_role = 'data'."""
         res = query_sqlite(query, db_path=db_path or default_db_path)
         return json.dumps(res.model_dump(), indent=2, ensure_ascii=False)
 
@@ -383,11 +384,15 @@ def build_deep_agent(
         ),
         SubAgent(
             name="excel-orchestrator",
-            description="Sub-agent untuk orkestrasi pemrosesan Excel/ODS multi-halaman melalui render visual per halaman.",
+            description="Sub-agent untuk orkestrasi workbook Excel/ODS secara native-first (struktur sel, formula, grafik) dengan VLM hanya untuk dashboard/gambar.",
             system_prompt=(
                 "Anda adalah Sub-Agent Spesialis Workbook Excel/ODS. "
-                "Tugas Anda: Konversi workbook ke PDF sementara, proses halaman hasil cetak spreadsheet sebagai gambar, "
-                "jaga struktur sheet/tabel, dan gabungkan hasilnya."
+                "Workbook berbeda dari PDF: angka, formula, dan sumber grafik tersedia langsung dari struktur file. "
+                "Tugas Anda: jalankan 'extract_excel_document', lalu laporkan per sheet peran sheet "
+                "(dashboard/summary/detail/support), tabel native yang tersimpan, serta seluruh 'Peringatan Workbook' "
+                "(misalnya rentang grafik yang melintasi blok lain) tanpa mengoreksi angka secara diam-diam. "
+                "Blok parameter/filter (mis. 'Region: All') adalah konteks tampilan, bukan data. "
+                + ROW_ROLE_SQL_GUIDANCE
             ),
             tools=[extract_excel_document],
         ),
@@ -400,7 +405,8 @@ def build_deep_agent(
                 "1. Analisis tabel pada Markdown dan pilah mana yang bertipe transaksional/finansial ('classify_table_storage').\n"
                 "2. Ingest tabel transaksional ke database SQLite dokumen ('ingest_tables_to_sqlite').\n"
                 "3. Lakukan audit verifikasi ganda integritas baris dan kalkulasi agregat ('verify_table_data_integrity').\n"
-                "4. Lakukan inspeksi skema ('inspect_sqlite_tables') dan eksekusi query SQL bila diminta ('query_sqlite_database')."
+                "4. Lakukan inspeksi skema ('inspect_sqlite_tables') dan eksekusi query SQL bila diminta ('query_sqlite_database').\n"
+                "5. " + ROW_ROLE_SQL_GUIDANCE
             ),
             tools=[
                 classify_table_storage,
@@ -425,7 +431,7 @@ def build_deep_agent(
         "  - 'presentation-specialist'   : Menangani slide PPT/PPTX visual.\n"
         "  - 'pdf-orchestrator'          : Mengelola multi-halaman PDF dengan heading continuity.\n"
         "  - 'docx-orchestrator'         : Mengelola multi-halaman DOCX/DOC lewat render visual per halaman.\n"
-        "  - 'excel-orchestrator'        : Mengelola workbook Excel/ODS lewat render visual per halaman.\n"
+        "  - 'excel-orchestrator'        : Mengelola workbook Excel/ODS secara native-first (sel, formula, grafik); VLM hanya untuk dashboard/gambar.\n"
         "  - 'tabular-db-specialist'     : Memisahkan tabel transaksional ke SQLite dan melakukan double-verification.\n\n"
         "Instruksi Kerja:\n"
         f"{MARKDOWN_LINE_BREAK_RULES}\n\n"

@@ -489,6 +489,7 @@ class TestExcelRegionSurvey(unittest.TestCase):
                     "region_id": "TEXT",
                     "period": "TEXT",
                     "source_row": "INTEGER",
+                    "row_role": "TEXT",
                     "id": "INTEGER",
                     "area": "TEXT",
                     "amount": "INTEGER",

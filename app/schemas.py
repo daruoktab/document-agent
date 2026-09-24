@@ -1035,6 +1035,17 @@ class ExcelRegion(BaseModel):
     tile_row_index: int = 0
     tile_column_index: int = 0
     is_tile: bool = False
+    semantic_role: Literal["parameter"] | None = Field(
+        default=None,
+        description=(
+            "Peran semantik blok nontabel. 'parameter' menandai blok label-nilai "
+            "seperti filter laporan yang tidak boleh diperlakukan sebagai tabel data."
+        ),
+    )
+    referenced_by_formula: bool = Field(
+        default=False,
+        description="True bila ada formula workbook yang merujuk sel di dalam region.",
+    )
 
 
 class ExcelChartSeries(BaseModel):
@@ -1096,6 +1107,11 @@ class ExcelNativeArtifact(BaseModel):
     row_count: int = Field(default=0, ge=0)
     columns: list[str] = Field(default_factory=list)
     csv_path: str | None = None
+    aggregate_row_count: int = Field(
+        default=0,
+        ge=0,
+        description="Jumlah baris subtotal/grand total (row_role != 'data') di dalam row_count.",
+    )
 
 
 class ExtractedDocument(BaseModel):

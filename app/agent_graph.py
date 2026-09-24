@@ -18,7 +18,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from .docx import convert_docx_to_pdf, docx_page_count
-from .excel import convert_excel_for_extraction, excel_page_count
+from .excel import (
+    convert_excel_for_extraction,
+    ensure_excel_native_artifacts,
+    excel_page_count,
+)
 from .pdf import pdf_page_count, pdf_to_images
 from .ppt import count_presentation_slides, render_presentation_slides_to_images
 from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
@@ -72,6 +76,21 @@ class DocumentBatchState(TypedDict, total=False):
     status: str
     error: str | None
     instruction: str
+
+
+def _excel_native_for_agent(
+    resolved: Path, resolved_out: Path
+) -> dict[str, Any] | None:
+    """Jalankan ekstraksi native Excel tanpa pernah menggagalkan alur visual."""
+    try:
+        return ensure_excel_native_artifacts(resolved, resolved_out)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ekstraksi native Excel untuk Agent Mode gagal: %s", exc)
+        return None
+
+
+def _public_excel_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in context.items() if key != "signature"}
 
 
 def get_subagent_task_directives(
@@ -254,6 +273,7 @@ class AgentDocumentGraph:
 
         end_idx = min(start_idx + batch_size - 1, total_items)
         rendered_images: list[str] = []
+        excel_native: dict[str, Any] | None = None
 
         if doc_type == "pptx":
             target_indices = list(range(start_idx - 1, end_idx))
@@ -310,6 +330,7 @@ class AgentDocumentGraph:
                 }
 
         elif doc_type == "excel":
+            excel_native = _excel_native_for_agent(resolved, resolved_out)
             pages_out = resolved_out / "pages"
             converted_out = resolved_out / "converted"
             pages_out.mkdir(parents=True, exist_ok=True)
@@ -349,6 +370,13 @@ class AgentDocumentGraph:
             total_pages=total_items,
             active_tables=active_tables,
         )
+        if excel_native is not None:
+            # Workbook berbeda dari PDF: angka sudah tersedia secara native, sehingga
+            # agent cukup membaca konteks visual dari gambar.
+            directives["excel_native_context"] = _public_excel_context(excel_native)
+            directives["subagent_directives"]["tabular_sqlite_specialist"][
+                "excel_native_note"
+            ] = excel_native["instruction"]
 
         return {
             "current_page": start_idx,
@@ -467,7 +495,27 @@ class AgentDocumentGraph:
         db_file = db_dir / f"{resolved.stem}.sqlite"
 
         tabular_info: list[dict[str, Any]] = []
-        if state.get("ingest_transactional_tables", True):
+        excel_native = (
+            _excel_native_for_agent(resolved, out_base) if doc_type == "excel" else None
+        )
+        if excel_native is not None:
+            tabular_info.extend(
+                {
+                    "table_name": table["table_name"],
+                    "rows_ingested": table["row_count"],
+                    "aggregate_rows": table.get("aggregate_row_count", 0),
+                    "columns": table["columns"],
+                    "verified": True,
+                    "source": "excel_native",
+                }
+                for table in excel_native.get("native_tables", [])
+            )
+        # Untuk Excel dengan data native, tabel dari Markdown agent adalah hasil
+        # pembacaan visual dan tidak boleh menduplikasi angka native di SQLite.
+        ingest_agent_tables = state.get("ingest_transactional_tables", True) and (
+            excel_native is None or bool(excel_native.get("vlm_tables_needed"))
+        )
+        if ingest_agent_tables:
             try:
                 tab_results = extract_and_ingest_tables_from_markdown(
                     markdown_text=merged_md,
@@ -518,6 +566,8 @@ class AgentDocumentGraph:
             "tabular_database_tables": tabular_info,
             "active_database_tables": active_tables,
         }
+        if excel_native is not None:
+            metadata["excel_native"] = _public_excel_context(excel_native)
 
         out_meta = out_base / f"{resolved.stem}.meta.json"
         out_meta.write_text(
@@ -529,6 +579,12 @@ class AgentDocumentGraph:
             if is_complete
             else f"Halaman/Slide berhasil disimpan ({len(got_numbers)} dari {total_items} halaman/slide tersimpan). Lanjutkan ke nomor: {missing[:5]}..."
         )
+        if excel_native is not None:
+            msg += (
+                " Data native workbook tersedia di "
+                f"{excel_native['native_markdown_path']} dan SQLite "
+                f"{excel_native['database_path']}."
+            )
 
         return {
             "merged_markdown": merged_md,

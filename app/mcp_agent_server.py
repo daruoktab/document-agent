@@ -46,6 +46,7 @@ from .multi_page import preview_markdown_chunks as sim_preview_chunks
 from .preprocess import preprocess_image
 from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
 from .tabular_db import (
+    ROW_ROLE_SQL_GUIDANCE,
     TabularDatabaseManager,
     extract_and_ingest_tables_from_markdown,
     query_sqlite,
@@ -1564,7 +1565,8 @@ def classify_and_ingest_tables_to_sqlite(
     name="query_tabular_database",
     description=(
         "Jalankan query SQL (misal 'SELECT SUM(debit_amount), COUNT(*) FROM ...') pada database SQLite dokumen "
-        "untuk melakukan kalkulasi agregat berpresisi 100% yang andal pada basis data relasional SQLite."
+        "untuk melakukan kalkulasi agregat berpresisi 100% yang andal pada basis data relasional SQLite. "
+        + ROW_ROLE_SQL_GUIDANCE
     ),
 )
 def query_tabular_database(
