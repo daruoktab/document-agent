@@ -294,6 +294,7 @@ def _cell_has_visible_style(cell: Any) -> bool:
 
 
 def _connected_components(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
+    """Bentuk seed region tanpa menggabungkan sel yang hanya bersentuhan diagonal."""
     remaining = set(cells)
     components: list[set[tuple[int, int]]] = []
     while remaining:
@@ -302,17 +303,167 @@ def _connected_components(cells: set[tuple[int, int]]) -> list[set[tuple[int, in
         queue: deque[tuple[int, int]] = deque([start])
         while queue:
             row, column = queue.popleft()
-            for row_offset in (-1, 0, 1):
-                for column_offset in (-1, 0, 1):
-                    if row_offset == 0 and column_offset == 0:
-                        continue
-                    candidate = (row + row_offset, column + column_offset)
-                    if candidate in remaining:
-                        remaining.remove(candidate)
-                        component.add(candidate)
-                        queue.append(candidate)
+            for row_offset, column_offset in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                candidate = (row + row_offset, column + column_offset)
+                if candidate in remaining:
+                    remaining.remove(candidate)
+                    component.add(candidate)
+                    queue.append(candidate)
         components.append(component)
     return components
+
+
+def _range_bounds(reference: str | None) -> tuple[int, int, int, int] | None:
+    """Ubah referensi A1 statis menjadi batas baris/kolom yang tervalidasi."""
+    if not reference:
+        return None
+    try:
+        from openpyxl.utils.cell import range_boundaries
+
+        min_column, min_row, max_column, max_row = range_boundaries(
+            reference.replace("$", "")
+        )
+    except (ImportError, TypeError, ValueError):
+        return None
+    if min_row < 1 or min_column < 1 or max_row < min_row or max_column < min_column:
+        return None
+    return min_row, max_row, min_column, max_column
+
+
+def _bounds_overlap(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> bool:
+    return not (
+        left[1] < right[0]
+        or right[1] < left[0]
+        or left[3] < right[2]
+        or right[3] < left[2]
+    )
+
+
+def _coordinate_in_bounds(
+    coordinate: tuple[int, int],
+    bounds: tuple[int, int, int, int],
+) -> bool:
+    row, column = coordinate
+    min_row, max_row, min_column, max_column = bounds
+    return min_row <= row <= max_row and min_column <= column <= max_column
+
+
+def _add_declared_region_spec(
+    specs: list[tuple[str, str, tuple[int, int, int, int]]],
+    *,
+    kind: str,
+    name: str,
+    reference: str | None,
+    max_cells: int | None = None,
+) -> None:
+    bounds = _range_bounds(reference)
+    if bounds is None:
+        return
+    min_row, max_row, min_column, max_column = bounds
+    area = (max_row - min_row + 1) * (max_column - min_column + 1)
+    if max_cells is not None and area > max_cells:
+        return
+    if any(
+        existing_bounds == bounds or _bounds_overlap(bounds, existing_bounds)
+        for _, _, existing_bounds in specs
+    ):
+        return
+    specs.append((kind, name, bounds))
+
+
+def _static_defined_ranges(
+    workbook: Any,
+    sheet_title: str,
+) -> list[tuple[str, str]]:
+    ranges: list[tuple[str, str]] = []
+    for defined_name in workbook.defined_names.values():
+        name = str(getattr(defined_name, "name", "") or "Named Range")
+        if name.startswith("_xlnm."):
+            continue
+        try:
+            destinations = list(defined_name.destinations)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        for sheet_name, reference in destinations:
+            normalized_sheet = str(sheet_name).strip("'").replace("''", "'")
+            if normalized_sheet == sheet_title:
+                ranges.append((name, reference))
+    return ranges
+
+
+def _declared_region_specs(
+    worksheet: Any,
+    workbook: Any,
+) -> list[tuple[str, str, tuple[int, int, int, int]]]:
+    """Ambil batas native berkepercayaan tinggi sebelum inferensi layout."""
+    specs: list[tuple[str, str, tuple[int, int, int, int]]] = []
+
+    for table in worksheet.tables.values():
+        name = str(
+            getattr(table, "displayName", None)
+            or getattr(table, "name", None)
+            or "Excel Table"
+        )
+        _add_declared_region_spec(
+            specs,
+            kind="excel_table",
+            name=name,
+            reference=getattr(table, "ref", None),
+        )
+
+    for name, reference in _static_defined_ranges(workbook, worksheet.title):
+        _add_declared_region_spec(
+            specs,
+            kind="defined_name",
+            name=name,
+            reference=reference,
+            max_cells=1_000_000,
+        )
+
+    auto_filter_ref = getattr(getattr(worksheet, "auto_filter", None), "ref", None)
+    auto_filter_bounds = _range_bounds(auto_filter_ref)
+    if auto_filter_bounds is not None:
+        min_row, max_row, min_column, max_column = auto_filter_bounds
+        if max_row > min_row and max_column > min_column:
+            _add_declared_region_spec(
+                specs,
+                kind="auto_filter",
+                name="AutoFilter",
+                reference=auto_filter_ref,
+                max_cells=1_000_000,
+            )
+
+    return specs
+
+
+def _structural_style_coordinates(
+    raw_cells: list[Any],
+    data_coordinates: set[tuple[int, int]],
+    declared_bounds: list[tuple[int, int, int, int]],
+) -> set[tuple[int, int]]:
+    """Gunakan blank styled cell hanya jika menguatkan struktur yang sudah ada."""
+    structural: set[tuple[int, int]] = set()
+    for cell in raw_cells:
+        coordinate = (cell.row, cell.column)
+        if coordinate in data_coordinates or not _cell_has_visible_style(cell):
+            continue
+        in_declared_region = any(
+            _coordinate_in_bounds(coordinate, bounds) for bounds in declared_bounds
+        )
+        bridges_horizontal = (
+            (cell.row, cell.column - 1) in data_coordinates
+            and (cell.row, cell.column + 1) in data_coordinates
+        )
+        bridges_vertical = (
+            (cell.row - 1, cell.column) in data_coordinates
+            and (cell.row + 1, cell.column) in data_coordinates
+        )
+        if in_declared_region or bridges_horizontal or bridges_vertical:
+            structural.add(coordinate)
+    return structural
 
 
 def _drawing_regions(worksheet: Any) -> list[tuple[str, int, int, int, int]]:
@@ -671,19 +822,10 @@ def survey_excel_workbook(
     try:
         for sheet_index, worksheet in enumerate(formula_book.worksheets):
             visible = worksheet.sheet_state == "visible"
-            if not visible:
-                surveyed_sheets.append(
-                    ExcelSheetSurvey(
-                        name=worksheet.title,
-                        index=sheet_index,
-                        visible=False,
-                    )
-                )
-                continue
-
             cached_sheet = value_book[worksheet.title]
             raw_cells = list(getattr(worksheet, "_cells", {}).values())
             drawing_specs = _drawing_regions(worksheet)
+            declared_specs = _declared_region_specs(worksheet, formula_book)
             chart_evidence = _extract_chart_evidence(
                 worksheet, value_workbook=value_book
             )
@@ -697,12 +839,20 @@ def survey_excel_workbook(
                 for cell in raw_cells
                 if cell.value is not None
             }
-            if not data_coordinates and not drawing_specs:
+            if not data_coordinates and not drawing_specs and not declared_specs:
                 surveyed_sheets.append(
                     ExcelSheetSurvey(
                         name=worksheet.title,
                         index=sheet_index,
-                        visible=True,
+                        visible=visible,
+                        role="plain" if visible else "support",
+                        role_confidence=0.0 if visible else 1.0,
+                        role_reasons=(
+                            []
+                            if visible
+                            else ["sheet tersembunyi dipertahankan untuk audit native"]
+                        ),
+                        render_strategy="hybrid" if visible else "native",
                     )
                 )
                 continue
@@ -712,6 +862,7 @@ def survey_excel_workbook(
             bounds: list[tuple[int, int, int, int]] = [
                 (row, row, column, column) for row, column in data_coordinates
             ]
+            bounds.extend(spec_bounds for _, _, spec_bounds in declared_specs)
             for merged_range in worksheet.merged_cells.ranges:
                 min_column, min_row, max_column, max_row = range_boundaries(
                     str(merged_range)
@@ -751,37 +902,89 @@ def survey_excel_workbook(
                 and max_column - min_column + 1 >= 8
                 and max_column - min_column + 1 >= used_width * 0.5
             }
-            connected_coordinates = data_coordinates - isolated_merged_anchors
-
-            regions: list[ExcelRegion] = []
-            components = sorted(
-                [
-                    *_connected_components(connected_coordinates),
-                    *({anchor} for anchor in isolated_merged_anchors),
-                ],
-                key=lambda component: (
-                    min(row for row, _ in component),
-                    min(column for _, column in component),
-                ),
+            declared_bounds = [item[2] for item in declared_specs]
+            structural_coordinates = data_coordinates | _structural_style_coordinates(
+                raw_cells,
+                data_coordinates,
+                declared_bounds,
             )
-            for component in components:
+            claimed_coordinates: set[tuple[int, int]] = set()
+            region_candidates: list[
+                tuple[
+                    set[tuple[int, int]],
+                    tuple[int, int, int, int] | None,
+                    str | None,
+                    str | None,
+                ]
+            ] = []
+            for declared_kind, declared_name, declared_region_bounds in declared_specs:
+                component = {
+                    coordinate
+                    for coordinate in structural_coordinates
+                    if _coordinate_in_bounds(coordinate, declared_region_bounds)
+                }
                 if not component.intersection(data_coordinates):
                     continue
-                min_row = min(row for row, _ in component)
-                max_row = max(row for row, _ in component)
-                min_column = min(column for _, column in component)
-                max_column = max(column for _, column in component)
-                for anchor in component:
-                    merged_bounds = merged_bounds_by_anchor.get(anchor)
-                    if merged_bounds is None:
-                        continue
-                    merged_min_row, merged_max_row, merged_min_col, merged_max_col = (
-                        merged_bounds
+                region_candidates.append(
+                    (
+                        component,
+                        declared_region_bounds,
+                        declared_name,
+                        declared_kind,
                     )
-                    min_row = min(min_row, merged_min_row)
-                    max_row = max(max_row, merged_max_row)
-                    min_column = min(min_column, merged_min_col)
-                    max_column = max(max_column, merged_max_col)
+                )
+                claimed_coordinates.update(component)
+
+            inferred_coordinates = (
+                structural_coordinates
+                - claimed_coordinates
+                - isolated_merged_anchors
+            )
+            region_candidates.extend(
+                (component, None, None, None)
+                for component in _connected_components(inferred_coordinates)
+            )
+            region_candidates.extend(
+                ({anchor}, None, None, None)
+                for anchor in isolated_merged_anchors
+                if anchor not in claimed_coordinates
+            )
+
+            regions: list[ExcelRegion] = []
+            region_candidates.sort(
+                key=lambda candidate: (
+                    candidate[1][0]
+                    if candidate[1] is not None
+                    else min(row for row, _ in candidate[0]),
+                    candidate[1][2]
+                    if candidate[1] is not None
+                    else min(column for _, column in candidate[0]),
+                ),
+            )
+            for component, forced_bounds, declared_name, declared_kind in region_candidates:
+                if not component.intersection(data_coordinates):
+                    continue
+                if forced_bounds is not None:
+                    min_row, max_row, min_column, max_column = forced_bounds
+                else:
+                    min_row = min(row for row, _ in component)
+                    max_row = max(row for row, _ in component)
+                    min_column = min(column for _, column in component)
+                    max_column = max(column for _, column in component)
+                    for anchor in component:
+                        merged_bounds = merged_bounds_by_anchor.get(anchor)
+                        if merged_bounds is None:
+                            continue
+                        (
+                            merged_min_row,
+                            merged_max_row,
+                            merged_min_col,
+                            merged_max_col,
+                        ) = merged_bounds
+                        min_row = min(min_row, merged_min_row)
+                        max_row = max(max_row, merged_max_row)
+                        min_column = min(min_column, merged_min_col)
+                        max_column = max(max_column, merged_max_col)
                 evidence: list[ExcelCellEvidence] = []
                 text_values: list[str] = []
                 minimum_font_size: float | None = None
@@ -840,11 +1043,16 @@ def survey_excel_workbook(
                     for cell in evidence
                     if cell.value not in (None, "") and cell.row <= min_row + 2
                 ]
-                title = " ".join(first_rows[:3]).strip() or None
+                title = declared_name or " ".join(first_rows[:3]).strip() or None
                 period = _extract_period(" ".join(text_values[:20]))
                 row_count = len({cell.row for cell in evidence})
                 column_count = len({cell.column for cell in evidence})
-                kind = "table" if row_count >= 2 and column_count >= 2 else "text"
+                kind = (
+                    "table"
+                    if declared_kind in {"excel_table", "auto_filter"}
+                    or (row_count >= 2 and column_count >= 2)
+                    else "text"
+                )
                 width = max_column - min_column + 1
                 height = max_row - min_row + 1
                 small_font = bool(
@@ -938,8 +1146,16 @@ def survey_excel_workbook(
                 ExcelSheetSurvey(
                     name=worksheet.title,
                     index=sheet_index,
-                    visible=True,
+                    visible=visible,
                     used_range=used_range,
+                    role="plain" if visible else "support",
+                    role_confidence=0.0 if visible else 1.0,
+                    role_reasons=(
+                        []
+                        if visible
+                        else ["sheet tersembunyi dipertahankan untuk audit native"]
+                    ),
+                    render_strategy="hybrid" if visible else "native",
                     nonempty_cell_count=len(data_coordinates),
                     formula_count=sum(
                         cell.data_type == "f" for cell in raw_cells
@@ -1174,12 +1390,44 @@ finally:
         time.sleep(0.5)
 
 
+def _header_candidate_score(
+    nonempty: list[ExcelCellEvidence],
+    following: list[ExcelCellEvidence],
+    *,
+    width: int,
+    text_count: int,
+) -> float:
+    following_numeric = sum(
+        isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
+        for cell in following
+    )
+    coverage = len(nonempty) / width
+    normalized_headers = {str(cell.value).strip().casefold() for cell in nonempty}
+    uniqueness = len(normalized_headers) / len(nonempty)
+    immediate_body_bonus = 3.0 if len(following) >= 2 else 0.0
+    formula_penalty = sum(bool(cell.formula) for cell in nonempty) * 0.75
+    long_text_penalty = sum(
+        len(str(cell.value).strip()) > 80 for cell in nonempty
+    ) * 0.5
+    return (
+        text_count
+        + 2.0 * coverage
+        + uniqueness
+        + immediate_body_bonus
+        + min(2.0, following_numeric * 0.5)
+        - formula_penalty
+        - long_text_penalty
+    )
+
+
 def _detect_header_row(region: ExcelRegion) -> tuple[int, list[str]] | None:
     by_row: dict[int, list[ExcelCellEvidence]] = {}
     for cell in region.cells:
         by_row.setdefault(cell.row, []).append(cell)
-    candidates: list[tuple[int, int, list[str]]] = []
-    for row_number in sorted(by_row)[:8]:
+    candidates: list[tuple[float, int, list[str]]] = []
+    width = max(1, region.max_column - region.min_column + 1)
+    candidate_rows = sorted(by_row)[:12]
+    for row_number in candidate_rows:
         cells = sorted(by_row[row_number], key=lambda item: item.column)
         text_count = sum(
             isinstance(cell.value, str) and bool(cell.value.strip()) for cell in cells
@@ -1191,11 +1439,22 @@ def _detect_header_row(region: ExcelRegion) -> tuple[int, list[str]] | None:
                 headers_by_column.get(column, f"column_{column - region.min_column + 1}")
                 for column in range(region.min_column, region.max_column + 1)
             ]
-            candidates.append((text_count, -row_number, headers))
+            following = [
+                cell
+                for cell in by_row.get(row_number + 1, [])
+                if cell.value not in (None, "")
+            ]
+            score = _header_candidate_score(
+                nonempty,
+                following,
+                width=width,
+                text_count=text_count,
+            )
+            candidates.append((score, row_number, headers))
     if not candidates:
         return None
-    _, negative_row, headers = max(candidates, key=lambda item: (item[0], item[1]))
-    return -negative_row, headers
+    _, header_row, headers = max(candidates, key=lambda item: (item[0], item[1]))
+    return header_row, headers
 
 
 def _unique_sql_headers(headers: list[str]) -> list[str]:
@@ -1206,6 +1465,34 @@ def _unique_sql_headers(headers: list[str]) -> list[str]:
         seen[base] = seen.get(base, 0) + 1
         result.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
     return result
+
+
+def _infer_excel_sqlite_type(values: list[Any]) -> str:
+    """Pilih afinitas SQLite tanpa mengubah teks/kode Excel menjadi angka."""
+    non_empty = [value for value in values if value not in (None, "")]
+    if not non_empty:
+        return "TEXT"
+    if not all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in non_empty
+    ):
+        return "TEXT"
+    if all(
+        isinstance(value, int)
+        or (isinstance(value, float) and value.is_integer())
+        for value in non_empty
+    ):
+        return "INTEGER"
+    return "REAL"
+
+
+def _coerce_excel_sqlite_value(value: Any, sql_type: str) -> Any:
+    """Pertahankan representasi tekstual stabil untuk kolom nonnumerik."""
+    if value is None or sql_type != "TEXT":
+        return value
+    if isinstance(value, (datetime, date, datetime_time)):
+        return value.isoformat()
+    return str(value)
 
 
 def _markdown_cell(value: Any) -> str:
@@ -1710,7 +1997,29 @@ def persist_excel_native_data(
                 (sheet_name + "|" + "|".join(headers)).encode("utf-8")
             ).hexdigest()[:8]
             table_name = f"excel_{_slug(sheet_name)}_{signature}"
-            quoted_columns = ", ".join(f'"{header}"' + " NUMERIC" for header in headers)
+            prepared_rows: list[tuple[ExcelRegion, int, list[Any]]] = []
+            for region, header_row in group:
+                values_by_coordinate = {
+                    (cell.row, cell.column): cell.value for cell in region.cells
+                }
+                for row in range(header_row + 1, region.max_row + 1):
+                    values = [
+                        values_by_coordinate.get((row, column))
+                        for column in range(region.min_column, region.max_column + 1)
+                    ]
+                    if any(value not in (None, "") for value in values):
+                        prepared_rows.append((region, row, values))
+
+            column_types = [
+                _infer_excel_sqlite_type(
+                    [values[index] for _, _, values in prepared_rows]
+                )
+                for index in range(len(headers))
+            ]
+            quoted_columns = ", ".join(
+                f'"{header}" {sql_type}'
+                for header, sql_type in zip(headers, column_types, strict=True)
+            )
             connection.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS "{table_name}" (
@@ -1737,28 +2046,22 @@ def persist_excel_native_data(
             ]
             column_sql = ", ".join(f'"{column}"' for column in insert_columns)
             placeholders = ", ".join("?" for _ in insert_columns)
-            for region, header_row in group:
-                values_by_coordinate = {
-                    (cell.row, cell.column): cell.value for cell in region.cells
-                }
-                for row in range(header_row + 1, region.max_row + 1):
-                    values = [
-                        values_by_coordinate.get((row, column))
-                        for column in range(region.min_column, region.max_column + 1)
-                    ]
-                    if not any(value not in (None, "") for value in values):
-                        continue
-                    connection.execute(
-                        f'INSERT INTO "{table_name}" ({column_sql}) VALUES ({placeholders})',
-                        (
-                            survey.source_file,
-                            region.sheet_name,
-                            region.region_id,
-                            region.period,
-                            row,
-                            *values,
-                        ),
-                    )
+            for region, row, values in prepared_rows:
+                stored_values = [
+                    _coerce_excel_sqlite_value(value, sql_type)
+                    for value, sql_type in zip(values, column_types, strict=True)
+                ]
+                connection.execute(
+                    f'INSERT INTO "{table_name}" ({column_sql}) VALUES ({placeholders})',
+                    (
+                        survey.source_file,
+                        region.sheet_name,
+                        region.region_id,
+                        region.period,
+                        row,
+                        *stored_values,
+                    ),
+                )
             created_tables.append(table_name)
         connection.commit()
     return created_tables
@@ -2009,7 +2312,7 @@ def process_multipage_excel(
                 region.kind == "table"
                 for sheet in survey.sheets
                 for region in sheet.regions
-                if sheet.role != "support"
+                if sheet.visible and sheet.role != "support"
             )
             if output_markdown_path:
                 markdown_target = Path(output_markdown_path).resolve()
