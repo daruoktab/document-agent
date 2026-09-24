@@ -18,7 +18,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from .docx import convert_docx_to_pdf, docx_page_count
-from .excel import convert_excel_to_pdf, excel_page_count
+from .excel import convert_excel_for_extraction, excel_page_count
 from .pdf import pdf_page_count, pdf_to_images
 from .ppt import count_presentation_slides, render_presentation_slides_to_images
 from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
@@ -315,7 +315,7 @@ class AgentDocumentGraph:
             pages_out.mkdir(parents=True, exist_ok=True)
             converted_out.mkdir(parents=True, exist_ok=True)
             try:
-                pdf_path = convert_excel_to_pdf(resolved, converted_out)
+                pdf_path = convert_excel_for_extraction(resolved, converted_out)
                 images = pdf_to_images(
                     pdf_path,
                     output_dir=pages_out,

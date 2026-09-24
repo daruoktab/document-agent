@@ -6,16 +6,17 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/jds-magang-ocr-agent-v2
+WorkingDirectory=%h/document-agent
 Environment=PYTHONUNBUFFERED=1
-Environment="PATH=%h/jds-magang-ocr-agent-v2/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=%h/document-agent/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="BASE_URL=http://127.0.0.1:8080/v1"
-Environment="VLM_MODEL=gemma-4-26b-vlm"
+Environment="VLM_MODEL=gemma-4-12b-vlm"
 Environment="VLM_ENABLE_THINKING=false"
 Environment="VLM_MAX_TOKENS=2048"
 Environment="OCR_BASE_URL=http://127.0.0.1:8081/v1"
-Environment="OCR_MODEL=unlimited-ocr"
-ExecStart=/bin/bash %h/jds-magang-ocr-agent-v2/logged-exec.sh %h/jds-magang-ocr-agent-v2/logs/streamlit.log %h/jds-magang-ocr-agent-v2/.venv/bin/streamlit run app/streamlit_logic.py --server.address 0.0.0.0 --server.port 8501
+Environment="OCR_BACKEND=paddleocr_vl"
+Environment="OCR_MODEL=paddleocr-vl-1.6"
+ExecStart=/bin/bash %h/document-agent/deploy/server/logged-exec.sh %h/document-agent/logs/streamlit.log %h/document-agent/.venv/bin/streamlit run app/streamlit_logic.py --server.address 0.0.0.0 --server.port 8501
 TimeoutStopSec=60
 Restart=always
 RestartSec=5

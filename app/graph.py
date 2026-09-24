@@ -21,12 +21,14 @@ from langgraph.graph.state import CompiledStateGraph
 from .agents import get_agent
 from .config import Settings, get_settings
 from .extractor import VisionExtractor
-from .llm import build_ocr, build_vlm
+from .llm import build_vlm
 from .multi_page import extract_document_title
 from .ocr import UnlimitedOCRExtractor
+from .paddle_ocr import PaddleOCRVLExtractor
 from .preprocess import preprocess_image, rotate_image_right_angle
 from .prompts import normalize_specs
 from .schemas import OCRExtractionResult, OCRRegion, PipelinePageResult
+from .text_reflow import reflow_regions
 
 logger = logging.getLogger("app.graph")
 
@@ -146,12 +148,14 @@ class DocumentExtractionPipeline:
         ocr_llm: BaseChatModel | Any | None = None,
         *,
         thorough: bool = False,
+        ocr_extractor: Any | None = None,
     ) -> None:
         self.settings: Settings = settings or get_settings()
         self.vlm: BaseChatModel = vlm or build_vlm(self.settings)
         self.extractor = VisionExtractor(self.vlm)
-        self.ocr_extractor: UnlimitedOCRExtractor | None = None
-        if ocr_llm is not None:
+        self.ocr_extractor: Any | None = ocr_extractor
+        if self.ocr_extractor is None and ocr_llm is not None:
+            # Kompatibilitas test/caller lama; runtime normal memakai PaddleOCR-VL.
             self.ocr_extractor = UnlimitedOCRExtractor(
                 ocr_llm,
                 model_name=self.settings.ocr_model or "injected-ocr",
@@ -164,12 +168,17 @@ class DocumentExtractionPipeline:
                 blank_ink_ratio=self.settings.ocr_blank_ink_ratio,
                 sparse_ink_ratio=self.settings.ocr_sparse_ink_ratio,
             )
-        elif self.settings.ocr_model:
-            self.ocr_extractor = UnlimitedOCRExtractor(
-                build_ocr(self.settings),
+        elif (
+            self.ocr_extractor is None
+            and self.settings.ocr_model
+            and self.settings.ocr_backend == "paddleocr_vl"
+        ):
+            self.ocr_extractor = PaddleOCRVLExtractor(
+                base_url=self.settings.ocr_base_url,
                 model_name=self.settings.ocr_model,
-                prompt=self.settings.ocr_prompt,
-                coordinate_size=self.settings.ocr_coordinate_size,
+                api_key=self.settings.ocr_api_key,
+                timeout=self.settings.ocr_timeout,
+                max_tokens=self.settings.ocr_max_tokens,
                 crop_padding=self.settings.ocr_crop_padding,
                 min_trust_score=self.settings.ocr_min_trust_score,
                 medium_trust_score=self.settings.ocr_medium_trust_score,
@@ -177,6 +186,12 @@ class DocumentExtractionPipeline:
                 blank_ink_ratio=self.settings.ocr_blank_ink_ratio,
                 sparse_ink_ratio=self.settings.ocr_sparse_ink_ratio,
             )
+        elif (
+            self.ocr_extractor is None
+            and self.settings.ocr_model
+            and self.settings.ocr_backend != "disabled"
+        ):
+            raise ValueError(f"OCR_BACKEND tidak didukung: {self.settings.ocr_backend}")
         self.thorough: bool = thorough
         self.graph: CompiledStateGraph = self._build_graph()
 
@@ -274,6 +289,8 @@ class DocumentExtractionPipeline:
             ocr_quality_score=ocr_payload.quality_score,
             ocr_trust_level=ocr_payload.trust_level,
             ocr_risk_flags=ocr_payload.risk_flags,
+            textreflow_applied=ocr_payload.textreflow_applied,
+            textreflow_reason=ocr_payload.textreflow_reason,
             rotation_degrees=cast(
                 Any,
                 final_state.get("inspection_rotation_degrees", 0)
@@ -457,9 +474,32 @@ class DocumentExtractionPipeline:
             and ocr_result.markdown.strip()
             and not state.get("requires_vlm_reading", False)
         ):
-            md_text = ocr_result.markdown
+            ocr_result.source_markdown = (
+                ocr_result.source_markdown or ocr_result.markdown
+            )
+            page_width = 0
+            try:
+                from PIL import Image
+
+                with Image.open(img) as source:
+                    page_width = source.width
+            except OSError:
+                logger.warning("[Pipeline:TextReflow] Gagal membaca lebar gambar %s", img)
+            reflowed, reflow_reason = reflow_regions(
+                ocr_result.regions,
+                page_width=page_width,
+                specs=specs,
+                enabled=self.settings.textreflow_enabled and page_width > 0,
+            )
+            md_text = reflowed or ocr_result.markdown
+            ocr_result.textreflow_applied = reflowed is not None
+            ocr_result.textreflow_reason = reflow_reason
             ocr_status = ocr_result.decision
-            source = f"OCR ({ocr_result.model})"
+            source = (
+                f"OCR ({ocr_result.model}) + TextReflow"
+                if reflowed is not None
+                else f"OCR ({ocr_result.model})"
+            )
         else:
             agent = get_agent(specs)
             md_text = agent.run(
@@ -497,6 +537,7 @@ class DocumentExtractionPipeline:
             "document_title": current_title,
             "ocr_status": ocr_status,
             "ocr_force_judge": ocr_status != "blank_page",
+            "ocr_result": ocr_result.model_dump(),
         }
 
     def _node_summon_diagram_specialist(

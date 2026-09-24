@@ -1,9 +1,9 @@
 # document-agent — OCR + Vision VLM Document Extractor
 
-Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Unlimited-OCR membuat draft dan grounding region, sedangkan Vision LLM utama menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
+Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Pipeline resmi PaddleOCR-VL membuat draft dan region layout melalui recognizer GGUF, TextReflow memperbaiki prosa satu/dua kolom yang memenuhi guard, sedangkan Gemma 4 12B menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
 
-> ℹ️ **Catatan Arsitektur:** 
-> Pipeline memakai dua server llama.cpp: VLM utama dan OCR pada port terpisah. Jika `OCR_MODEL` kosong atau endpoint OCR gagal, ekstraksi otomatis fallback ke VLM utama. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
+> ℹ️ **Catatan Arsitektur:**
+> Pipeline memakai dua server llama.cpp: Gemma pada port 8080 dan recognizer PaddleOCR-VL GGUF pada port 8081. Layout analyzer PaddleOCR berjalan di proses aplikasi. Jika `OCR_MODEL` kosong atau OCR gagal, ekstraksi otomatis fallback ke Gemma. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
 
 ---
 
@@ -20,7 +20,7 @@ Lihat [panduan pembelajaran dan perintah admin](docs/PEMBELAJARAN.md).
 - **Python**: `>= 3.12` (disarankan menggunakan Conda/venv dan manajer paket `uv`).
 - **Node.js & npm**: `>= 18` (diperlukan untuk engine compiler rendering Mermaid CLI lokal).
 - **LibreOffice**: Diperlukan untuk render PowerPoint serta survei, kalkulasi ulang, dan render region Excel/ODS via mode headless.
-- **Dua endpoint OpenAI-compatible**: server Vision LLM utama dan server Unlimited-OCR/DeepSeek-OCR-aware llama.cpp pada port berbeda.
+- **Dua endpoint OpenAI-compatible**: server Gemma dan server PaddleOCR-VL GGUF llama.cpp pada port berbeda.
 
 ### 2. Langkah Instalasi (Step-by-Step)
 
@@ -48,22 +48,23 @@ Buat berkas `.env` di direktori utama repositori. Model OCR sengaja boleh dikoso
 
 ```env
 BASE_URL=http://127.0.0.1:8080/v1
-VLM_MODEL=Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
+VLM_MODEL=gemma-4-12b-vlm
 VLM_ENABLE_THINKING=false
 VLM_VISUAL_RESCUE=true
 VLM_TEMPERATURE=0.1
 VLM_TIMEOUT=300
 
 OCR_BASE_URL=http://127.0.0.1:8081/v1
+OCR_BACKEND=paddleocr_vl
 OCR_MODEL=
 OCR_TEMPERATURE=0.0
 OCR_TIMEOUT=300
-OCR_PROMPT=<|grounding|>Convert the document to markdown.
 OCR_MIN_TRUST_SCORE=0.72
 OCR_MEDIUM_TRUST_SCORE=0.48
 OCR_ROTATION_RETRY=true
 OCR_BLANK_INK_RATIO=0.0002
 OCR_SPARSE_INK_RATIO=0.015
+TEXTREFLOW_ENABLED=true
 
 EXCEL_NATIVE_SURVEY=true
 EXCEL_REGION_RENDERING=true
@@ -72,9 +73,9 @@ EXCEL_MAX_DPI=450
 EXCEL_SMALL_FONT_POINTS=8
 ```
 
-Ketika `OCR_MODEL` diisi, OCR menjadi sumber draft Markdown utama hanya setelah lolos quality gate. Pipeline mengoreksi orientasi, membandingkan hasil dengan text-layer PDF bila tersedia, mencoba rotasi alternatif pada kandidat berisiko, dan memakai ekstraksi VLM independen saat trust OCR rendah. Dengan `VLM_VISUAL_RESCUE=true`, VLM juga mengambil alih pembacaan halaman berfont sangat kecil/padat, teks miring penting, anotasi teknis kecil, multi-kolom rapat, atau kontras rendah—meski OCR lolos trust tinggi. Grounding `table` dan `figure` dipotong ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman untuk masa setup karena mengaktifkan fallback VLM.
+Ketika `OCR_MODEL` diisi, pipeline resmi PaddleOCR-VL menjalankan layout analysis lokal dan mengirim crop elemen ke recognizer GGUF. Hasilnya menjadi draft utama hanya setelah lolos quality gate. TextReflow diterapkan otomatis pada halaman prosa satu/dua kolom yang tidak mengandung tabel, formula, atau figure; halaman lain mempertahankan Markdown Paddle. Pipeline membandingkan hasil dengan text-layer PDF, mencoba rotasi alternatif pada kandidat berisiko, dan memakai Gemma secara independen saat trust OCR rendah. Crop `table` dan `figure` disimpan ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman karena mengaktifkan fallback Gemma.
 
-Untuk Excel, pipeline menyurvei nilai sel, formula, merge, style, dan blok tabel sebelum rendering. Tabel berdampingan dirender sebagai region terpisah pada DPI adaptif; font kecil atau teks miring memicu pembacaan VLM utama. Nilai native disimpan bersama provenance sel ke SQLite/CSV dan menjadi bukti angka saat ekstraksi serta judge.
+Untuk Excel, pipeline menyurvei isi, formula, relasi antarsheet, grafik, merge, style, dan blok tabel sebelum rendering. Peran sheet ditentukan dari pola isinya—dashboard dirender sebagai konteks visual, ringkasan dibentuk dari nilai native, data detail dilampirkan lengkap melalui SQLite/CSV, dan sheet formula pendukung tetap tercatat untuk audit. Grafik native diubah menjadi narasi serta tabel Markdown; font kecil atau teks miring tetap dapat memicu pembacaan VLM adaptif.
 
 ---
 
@@ -248,9 +249,10 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
       "args": ["-m", "app.mcp_server"],
       "env": {
         "BASE_URL": "http://127.0.0.1:8080/v1",
-        "VLM_MODEL": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
+        "VLM_MODEL": "gemma-4-12b-vlm",
         "OCR_BASE_URL": "http://127.0.0.1:8081/v1",
-        "OCR_MODEL": "unlimited-ocr"
+        "OCR_BACKEND": "paddleocr_vl",
+        "OCR_MODEL": "paddleocr-vl-1.6"
       }
     }
   }

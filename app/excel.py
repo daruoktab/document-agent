@@ -9,7 +9,6 @@ satu per satu ke VLM.
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import logging
 import re
@@ -20,6 +19,7 @@ import tempfile
 import time
 import unicodedata
 from collections import deque
+from contextlib import closing
 from datetime import date, datetime
 from datetime import time as datetime_time
 from pathlib import Path
@@ -30,6 +30,9 @@ from .pdf import pdf_page_count, process_multipage_pdf
 from .ppt import _find_libreoffice_binary
 from .schemas import (
     ExcelCellEvidence,
+    ExcelChartEvidence,
+    ExcelChartSeries,
+    ExcelNativeArtifact,
     ExcelRegion,
     ExcelSheetSurvey,
     ExcelWorkbookSurvey,
@@ -297,6 +300,7 @@ def _cell_has_visible_style(cell: Any) -> bool:
 
 
 def _connected_components(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
+    """Bentuk seed region tanpa menggabungkan sel yang hanya bersentuhan diagonal."""
     remaining = set(cells)
     components: list[set[tuple[int, int]]] = []
     while remaining:
@@ -305,17 +309,167 @@ def _connected_components(cells: set[tuple[int, int]]) -> list[set[tuple[int, in
         queue: deque[tuple[int, int]] = deque([start])
         while queue:
             row, column = queue.popleft()
-            for row_offset in (-1, 0, 1):
-                for column_offset in (-1, 0, 1):
-                    if row_offset == 0 and column_offset == 0:
-                        continue
-                    candidate = (row + row_offset, column + column_offset)
-                    if candidate in remaining:
-                        remaining.remove(candidate)
-                        component.add(candidate)
-                        queue.append(candidate)
+            for row_offset, column_offset in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                candidate = (row + row_offset, column + column_offset)
+                if candidate in remaining:
+                    remaining.remove(candidate)
+                    component.add(candidate)
+                    queue.append(candidate)
         components.append(component)
     return components
+
+
+def _range_bounds(reference: str | None) -> tuple[int, int, int, int] | None:
+    """Ubah referensi A1 statis menjadi batas baris/kolom yang tervalidasi."""
+    if not reference:
+        return None
+    try:
+        from openpyxl.utils.cell import range_boundaries
+
+        min_column, min_row, max_column, max_row = range_boundaries(
+            reference.replace("$", "")
+        )
+    except (ImportError, TypeError, ValueError):
+        return None
+    if min_row < 1 or min_column < 1 or max_row < min_row or max_column < min_column:
+        return None
+    return min_row, max_row, min_column, max_column
+
+
+def _bounds_overlap(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+) -> bool:
+    return not (
+        left[1] < right[0]
+        or right[1] < left[0]
+        or left[3] < right[2]
+        or right[3] < left[2]
+    )
+
+
+def _coordinate_in_bounds(
+    coordinate: tuple[int, int],
+    bounds: tuple[int, int, int, int],
+) -> bool:
+    row, column = coordinate
+    min_row, max_row, min_column, max_column = bounds
+    return min_row <= row <= max_row and min_column <= column <= max_column
+
+
+def _add_declared_region_spec(
+    specs: list[tuple[str, str, tuple[int, int, int, int]]],
+    *,
+    kind: str,
+    name: str,
+    reference: str | None,
+    max_cells: int | None = None,
+) -> None:
+    bounds = _range_bounds(reference)
+    if bounds is None:
+        return
+    min_row, max_row, min_column, max_column = bounds
+    area = (max_row - min_row + 1) * (max_column - min_column + 1)
+    if max_cells is not None and area > max_cells:
+        return
+    if any(
+        existing_bounds == bounds or _bounds_overlap(bounds, existing_bounds)
+        for _, _, existing_bounds in specs
+    ):
+        return
+    specs.append((kind, name, bounds))
+
+
+def _static_defined_ranges(
+    workbook: Any,
+    sheet_title: str,
+) -> list[tuple[str, str]]:
+    ranges: list[tuple[str, str]] = []
+    for defined_name in workbook.defined_names.values():
+        name = str(getattr(defined_name, "name", "") or "Named Range")
+        if name.startswith("_xlnm."):
+            continue
+        try:
+            destinations = list(defined_name.destinations)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        for sheet_name, reference in destinations:
+            normalized_sheet = str(sheet_name).strip("'").replace("''", "'")
+            if normalized_sheet == sheet_title:
+                ranges.append((name, reference))
+    return ranges
+
+
+def _declared_region_specs(
+    worksheet: Any,
+    workbook: Any,
+) -> list[tuple[str, str, tuple[int, int, int, int]]]:
+    """Ambil batas native berkepercayaan tinggi sebelum inferensi layout."""
+    specs: list[tuple[str, str, tuple[int, int, int, int]]] = []
+
+    for table in worksheet.tables.values():
+        name = str(
+            getattr(table, "displayName", None)
+            or getattr(table, "name", None)
+            or "Excel Table"
+        )
+        _add_declared_region_spec(
+            specs,
+            kind="excel_table",
+            name=name,
+            reference=getattr(table, "ref", None),
+        )
+
+    for name, reference in _static_defined_ranges(workbook, worksheet.title):
+        _add_declared_region_spec(
+            specs,
+            kind="defined_name",
+            name=name,
+            reference=reference,
+            max_cells=1_000_000,
+        )
+
+    auto_filter_ref = getattr(getattr(worksheet, "auto_filter", None), "ref", None)
+    auto_filter_bounds = _range_bounds(auto_filter_ref)
+    if auto_filter_bounds is not None:
+        min_row, max_row, min_column, max_column = auto_filter_bounds
+        if max_row > min_row and max_column > min_column:
+            _add_declared_region_spec(
+                specs,
+                kind="auto_filter",
+                name="AutoFilter",
+                reference=auto_filter_ref,
+                max_cells=1_000_000,
+            )
+
+    return specs
+
+
+def _structural_style_coordinates(
+    raw_cells: list[Any],
+    data_coordinates: set[tuple[int, int]],
+    declared_bounds: list[tuple[int, int, int, int]],
+) -> set[tuple[int, int]]:
+    """Gunakan blank styled cell hanya jika menguatkan struktur yang sudah ada."""
+    structural: set[tuple[int, int]] = set()
+    for cell in raw_cells:
+        coordinate = (cell.row, cell.column)
+        if coordinate in data_coordinates or not _cell_has_visible_style(cell):
+            continue
+        in_declared_region = any(
+            _coordinate_in_bounds(coordinate, bounds) for bounds in declared_bounds
+        )
+        bridges_horizontal = (
+            (cell.row, cell.column - 1) in data_coordinates
+            and (cell.row, cell.column + 1) in data_coordinates
+        )
+        bridges_vertical = (
+            (cell.row - 1, cell.column) in data_coordinates
+            and (cell.row + 1, cell.column) in data_coordinates
+        )
+        if in_declared_region or bridges_horizontal or bridges_vertical:
+            structural.add(coordinate)
+    return structural
 
 
 def _drawing_regions(worksheet: Any) -> list[tuple[str, int, int, int, int]]:
@@ -349,6 +503,268 @@ def _drawing_regions(worksheet: Any) -> list[tuple[str, int, int, int, int]]:
             continue
         drawings.append((kind, min_row, max_row, min_column, max_column))
     return drawings
+
+
+def _formula_dependencies(worksheet: Any, sheet_names: set[str]) -> list[str]:
+    dependencies: set[str] = set()
+    pattern = re.compile(r"(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_. -]*))!")
+    for cell in getattr(worksheet, "_cells", {}).values():
+        if getattr(cell, "data_type", None) != "f":
+            continue
+        for quoted, plain in pattern.findall(str(cell.value)):
+            candidate = (quoted or plain).replace("''", "'").strip()
+            if candidate in sheet_names and candidate != worksheet.title:
+                dependencies.add(candidate)
+    return sorted(dependencies)
+
+
+def _chart_title(chart: Any, fallback: str) -> str:
+    try:
+        paragraphs = chart.title.tx.rich.p
+        value = "".join(
+            run.t or "" for paragraph in paragraphs for run in paragraph.r
+        ).strip()
+        return value or fallback
+    except (AttributeError, TypeError):
+        return fallback
+
+
+def _cache_values(reference: Any) -> tuple[str | None, list[Any]]:
+    if reference is None:
+        return None, []
+    formula = getattr(reference, "f", None)
+    cache = getattr(reference, "strCache", None) or getattr(
+        reference, "numCache", None
+    )
+    points = getattr(cache, "pt", None) or []
+    if not points:
+        return formula, []
+    point_count = int(getattr(cache, "ptCount", 0) or 0)
+    max_index = max(int(point.idx) for point in points)
+    values: list[Any] = [None] * max(point_count, max_index + 1)
+    for point in points:
+        value: Any = point.v
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        values[int(point.idx)] = value
+    return formula, values
+
+
+def _reference_values(formula: str | None, workbook: Any) -> list[Any]:
+    if not formula or "!" not in formula:
+        return []
+    sheet_token, cell_range = formula.rsplit("!", 1)
+    sheet_name = sheet_token.strip("'").replace("''", "'")
+    if sheet_name not in workbook.sheetnames:
+        return []
+    try:
+        cells = workbook[sheet_name][cell_range.replace("$", "")]
+    except (KeyError, TypeError, ValueError):
+        return []
+    if not isinstance(cells, tuple):
+        return [cells.value]
+    values: list[Any] = []
+    for row in cells:
+        if isinstance(row, tuple):
+            values.extend(cell.value for cell in row)
+        else:
+            values.append(row.value)
+    return values
+
+
+def _series_title(series: Any, index: int, workbook: Any = None) -> str:
+    text = getattr(series, "tx", None)
+    reference = getattr(text, "strRef", None)
+    formula, cached = _cache_values(reference)
+    if cached and cached[0] not in (None, ""):
+        return str(cached[0])
+    referenced = _reference_values(formula, workbook) if workbook is not None else []
+    if referenced and referenced[0] not in (None, ""):
+        return str(referenced[0])
+    literal = getattr(text, "v", None)
+    return str(literal).strip() if literal else f"Series {index}"
+
+
+def _category_family(value: Any) -> str:
+    if isinstance(value, (datetime, date)):
+        return "date"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return "number"
+    text = str(value or "").strip()
+    if re.fullmatch(
+        r"(?:jan|feb|mar|apr|may|mei|jun|jul|aug|agu|sep|oct|okt|nov|dec|des)[a-z]*[- /]\d{2,4}",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "date"
+    return "text"
+
+
+def _extract_chart_evidence(
+    worksheet: Any,
+    *,
+    value_workbook: Any = None,
+) -> list[ExcelChartEvidence]:
+    try:
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("openpyxl diperlukan untuk membaca grafik workbook.") from exc
+
+    charts: list[ExcelChartEvidence] = []
+    for chart_index, chart in enumerate(getattr(worksheet, "_charts", []), start=1):
+        anchor = getattr(chart, "anchor", None)
+        start = getattr(anchor, "_from", None)
+        end = getattr(anchor, "to", None)
+        if start is not None:
+            min_row = int(start.row) + 1
+            min_column = int(start.col) + 1
+            max_row = int(end.row) + 1 if end is not None else min_row + 14
+            max_column = int(end.col) + 1 if end is not None else min_column + 7
+        else:
+            min_row = min_column = 1
+            max_row, max_column = 15, 8
+        cell_range = (
+            f"{get_column_letter(min_column)}{min_row}:"
+            f"{get_column_letter(max_column)}{max_row}"
+        )
+        evidence_series: list[ExcelChartSeries] = []
+        warnings: list[str] = []
+        for series_index, series in enumerate(chart.series, start=1):
+            category_source = getattr(series, "cat", None)
+            category_reference = getattr(category_source, "strRef", None) or getattr(
+                category_source, "numRef", None
+            )
+            value_source = getattr(series, "val", None)
+            value_reference = getattr(value_source, "numRef", None)
+            category_formula, categories = _cache_values(category_reference)
+            value_formula, raw_values = _cache_values(value_reference)
+            if not categories and value_workbook is not None:
+                categories = _reference_values(category_formula, value_workbook)
+            if not raw_values and value_workbook is not None:
+                raw_values = _reference_values(value_formula, value_workbook)
+            values = [
+                value if isinstance(value, (int, float)) else None
+                for value in raw_values
+            ]
+            series_name = _series_title(series, series_index, value_workbook)
+            if len(categories) != len(values):
+                warnings.append(
+                    f"Seri {series_name} memiliki jumlah kategori "
+                    "dan nilai yang berbeda."
+                )
+            families = {
+                _category_family(category)
+                for category, value in zip(categories, values, strict=False)
+                if category not in (None, "") and value is not None
+            }
+            if "date" in families and len(families) > 1:
+                warnings.append(
+                    f"Seri {series_name} mencampur kategori "
+                    "periode dengan kategori nonperiode."
+                )
+            if any(value is None for value in values):
+                warnings.append(f"Seri {series_name} memiliki nilai kosong.")
+            evidence_series.append(
+                ExcelChartSeries(
+                    name=series_name,
+                    category_reference=category_formula,
+                    value_reference=value_formula,
+                    categories=[_json_safe_cell_value(value) for value in categories],
+                    values=values,
+                )
+            )
+        charts.append(
+            ExcelChartEvidence(
+                chart_id=f"s{worksheet._parent.index(worksheet) + 1:03d}_c{chart_index:03d}",
+                title=_chart_title(chart, f"Chart {chart_index}"),
+                chart_type=type(chart).__name__.removesuffix("Chart").lower(),
+                cell_range=cell_range,
+                series=evidence_series,
+                warnings=list(dict.fromkeys(warnings)),
+            )
+        )
+    return charts
+
+
+def _classify_excel_sheets(sheets: list[ExcelSheetSurvey]) -> list[str]:
+    dashboards = {sheet.name for sheet in sheets if sheet.charts and sheet.visible}
+    dashboard_dependencies = {
+        dependency
+        for sheet in sheets
+        if sheet.name in dashboards
+        for dependency in sheet.dependencies
+    }
+    for sheet in sheets:
+        if not sheet.visible:
+            continue
+        formula_ratio = sheet.formula_count / max(1, sheet.nonempty_cell_count)
+        largest = max(
+            (region for region in sheet.regions if region.kind == "table"),
+            key=lambda region: len(region.cells),
+            default=None,
+        )
+        tall_dataset = bool(
+            largest
+            and largest.max_row - largest.min_row + 1
+            >= max(12, 3 * (largest.max_column - largest.min_column + 1))
+            and len(largest.cells)
+            >= 0.55
+            * (largest.max_row - largest.min_row + 1)
+            * (largest.max_column - largest.min_column + 1)
+        )
+        if sheet.charts:
+            sheet.role = "dashboard"
+            sheet.role_confidence = 0.98
+            sheet.role_reasons = ["memiliki grafik native"]
+            sheet.render_strategy = "hybrid"
+        elif (
+            sheet.name in dashboard_dependencies
+            and formula_ratio >= 0.35
+            and sheet.dependencies
+        ):
+            sheet.role = "support"
+            sheet.role_confidence = 0.9
+            sheet.role_reasons = [
+                "menjadi sumber dashboard",
+                "didominasi formula agregasi",
+            ]
+            sheet.render_strategy = "native"
+        elif formula_ratio >= 0.35 and sheet.dependencies:
+            sheet.role = "summary"
+            sheet.role_confidence = min(0.95, 0.65 + formula_ratio / 3)
+            sheet.role_reasons = ["merangkum sheet lain melalui formula"]
+            if len([region for region in sheet.regions if region.kind == "table"]) > 1:
+                sheet.role_reasons.append("memiliki beberapa blok tabel ringkasan")
+            sheet.render_strategy = "native"
+        elif tall_dataset:
+            sheet.role = "detail"
+            sheet.role_confidence = 0.9
+            sheet.role_reasons = [
+                "memiliki header dan pola baris berulang",
+                "bentuk data lebih tinggi daripada lebar",
+            ]
+            sheet.render_strategy = "native"
+        else:
+            sheet.role = "plain"
+            sheet.role_confidence = 0.65
+            sheet.role_reasons = ["tidak menunjukkan pola dashboard atau agregasi"]
+            sheet.render_strategy = "hybrid"
+
+        for region in sheet.regions:
+            if sheet.role in {"detail", "summary", "support"} or sheet.role == "dashboard":
+                region.render_strategy = "native"
+            else:
+                region.render_strategy = "hybrid"
+            region.persist_native = region.kind == "table" and sheet.role != "support"
+
+    role_order = {"dashboard": 0, "summary": 1, "plain": 2, "detail": 3, "support": 4}
+    return [
+        sheet.name
+        for sheet in sorted(
+            (item for item in sheets if item.visible),
+            key=lambda item: (role_order[item.role], item.index),
+        )
+    ]
 
 
 def _region_native_text(
@@ -412,55 +828,47 @@ def survey_excel_workbook(
     try:
         for sheet_index, worksheet in enumerate(formula_book.worksheets):
             visible = worksheet.sheet_state == "visible"
-            if not visible:
-                surveyed_sheets.append(
-                    ExcelSheetSurvey(
-                        name=worksheet.title,
-                        index=sheet_index,
-                        visible=False,
-                    )
-                )
-                continue
-
             cached_sheet = value_book[worksheet.title]
             raw_cells = list(getattr(worksheet, "_cells", {}).values())
             drawing_specs = _drawing_regions(worksheet)
+            declared_specs = _declared_region_specs(worksheet, formula_book)
+            chart_evidence = _extract_chart_evidence(
+                worksheet, value_workbook=value_book
+            )
+            for chart in chart_evidence:
+                warnings.extend(
+                    f"{worksheet.title} - {chart.title}: {message}"
+                    for message in chart.warnings
+                )
             data_coordinates = {
                 (cell.row, cell.column)
                 for cell in raw_cells
                 if cell.value is not None
             }
-            if not data_coordinates and not drawing_specs:
+            if not data_coordinates and not drawing_specs and not declared_specs:
                 surveyed_sheets.append(
                     ExcelSheetSurvey(
                         name=worksheet.title,
                         index=sheet_index,
-                        visible=True,
+                        visible=visible,
+                        role="plain" if visible else "support",
+                        role_confidence=0.0 if visible else 1.0,
+                        role_reasons=(
+                            []
+                            if visible
+                            else ["sheet tersembunyi dipertahankan untuk audit native"]
+                        ),
+                        render_strategy="hybrid" if visible else "native",
                     )
                 )
                 continue
 
-            occupied = set(data_coordinates)
-            if data_coordinates:
-                min_data_row = min(row for row, _ in data_coordinates)
-                max_data_row = max(row for row, _ in data_coordinates)
-                min_data_column = min(column for _, column in data_coordinates)
-                max_data_column = max(column for _, column in data_coordinates)
-            else:
-                min_data_row = min(spec[1] for spec in drawing_specs)
-                max_data_row = max(spec[2] for spec in drawing_specs)
-                min_data_column = min(spec[3] for spec in drawing_specs)
-                max_data_column = max(spec[4] for spec in drawing_specs)
-
-            for cell in raw_cells:
-                if (
-                    min_data_row - 1 <= cell.row <= max_data_row + 1
-                    and min_data_column - 1 <= cell.column <= max_data_column + 1
-                    and _cell_has_visible_style(cell)
-                ):
-                    occupied.add((cell.row, cell.column))
-
             merged_by_coordinate: dict[tuple[int, int], str] = {}
+            merged_bounds_by_anchor: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+            bounds: list[tuple[int, int, int, int]] = [
+                (row, row, column, column) for row, column in data_coordinates
+            ]
+            bounds.extend(spec_bounds for _, _, spec_bounds in declared_specs)
             for merged_range in worksheet.merged_cells.ranges:
                 min_column, min_row, max_column, max_row = range_boundaries(
                     str(merged_range)
@@ -471,47 +879,118 @@ def survey_excel_workbook(
                     )
                     continue
                 anchor_value = worksheet.cell(min_row, min_column).value
+                if anchor_value is not None:
+                    merged_bounds_by_anchor[(min_row, min_column)] = (
+                        min_row,
+                        max_row,
+                        min_column,
+                        max_column,
+                    )
+                    bounds.append((min_row, max_row, min_column, max_column))
                 for row in range(min_row, max_row + 1):
                     for column in range(min_column, max_column + 1):
                         merged_by_coordinate[(row, column)] = str(merged_range)
-                        if anchor_value is not None:
-                            occupied.add((row, column))
 
-            # A sheet-wide merged caption must not bridge independent tables
-            # separated by empty columns underneath it.
-            caption_components: list[set[tuple[int, int]]] = []
-            for merged_range in worksheet.merged_cells.ranges:
-                left, top, right, bottom = range_boundaries(str(merged_range))
-                if top != bottom or worksheet.cell(top, left).value is None:
-                    continue
-                columns_below = sorted({
-                    column for row, column in data_coordinates
-                    if row > bottom and left <= column <= right
-                })
-                if not any(
-                    second > first + 1
-                    for first, second in itertools.pairwise(columns_below)
-                ):
-                    continue
-                caption = {(top, column) for column in range(left, right + 1)}
-                occupied.difference_update(caption)
-                caption_components.append(caption)
-
-            regions: list[ExcelRegion] = []
-            components = sorted(
-                [*_connected_components(occupied), *caption_components],
-                key=lambda component: (
-                    min(row for row, _ in component),
-                    min(column for _, column in component),
-                ),
+            bounds.extend(
+                (min_row, max_row, min_column, max_column)
+                for _, min_row, max_row, min_column, max_column in drawing_specs
             )
-            for component in components:
+            min_data_row = min(item[0] for item in bounds)
+            max_data_row = max(item[1] for item in bounds)
+            min_data_column = min(item[2] for item in bounds)
+            max_data_column = max(item[3] for item in bounds)
+
+            used_width = max_data_column - min_data_column + 1
+            isolated_merged_anchors = {
+                anchor
+                for anchor, (min_row, max_row, min_column, max_column) in merged_bounds_by_anchor.items()
+                if min_row == max_row
+                and max_column - min_column + 1 >= 8
+                and max_column - min_column + 1 >= used_width * 0.5
+            }
+            declared_bounds = [item[2] for item in declared_specs]
+            structural_coordinates = data_coordinates | _structural_style_coordinates(
+                raw_cells,
+                data_coordinates,
+                declared_bounds,
+            )
+            claimed_coordinates: set[tuple[int, int]] = set()
+            region_candidates: list[
+                tuple[
+                    set[tuple[int, int]],
+                    tuple[int, int, int, int] | None,
+                    str | None,
+                    str | None,
+                ]
+            ] = []
+            for declared_kind, declared_name, declared_region_bounds in declared_specs:
+                component = {
+                    coordinate
+                    for coordinate in structural_coordinates
+                    if _coordinate_in_bounds(coordinate, declared_region_bounds)
+                }
                 if not component.intersection(data_coordinates):
                     continue
-                min_row = min(row for row, _ in component)
-                max_row = max(row for row, _ in component)
-                min_column = min(column for _, column in component)
-                max_column = max(column for _, column in component)
+                region_candidates.append(
+                    (
+                        component,
+                        declared_region_bounds,
+                        declared_name,
+                        declared_kind,
+                    )
+                )
+                claimed_coordinates.update(component)
+
+            inferred_coordinates = (
+                structural_coordinates
+                - claimed_coordinates
+                - isolated_merged_anchors
+            )
+            region_candidates.extend(
+                (component, None, None, None)
+                for component in _connected_components(inferred_coordinates)
+            )
+            region_candidates.extend(
+                ({anchor}, None, None, None)
+                for anchor in isolated_merged_anchors
+                if anchor not in claimed_coordinates
+            )
+
+            regions: list[ExcelRegion] = []
+            region_candidates.sort(
+                key=lambda candidate: (
+                    candidate[1][0]
+                    if candidate[1] is not None
+                    else min(row for row, _ in candidate[0]),
+                    candidate[1][2]
+                    if candidate[1] is not None
+                    else min(column for _, column in candidate[0]),
+                ),
+            )
+            for component, forced_bounds, declared_name, declared_kind in region_candidates:
+                if not component.intersection(data_coordinates):
+                    continue
+                if forced_bounds is not None:
+                    min_row, max_row, min_column, max_column = forced_bounds
+                else:
+                    min_row = min(row for row, _ in component)
+                    max_row = max(row for row, _ in component)
+                    min_column = min(column for _, column in component)
+                    max_column = max(column for _, column in component)
+                    for anchor in component:
+                        merged_bounds = merged_bounds_by_anchor.get(anchor)
+                        if merged_bounds is None:
+                            continue
+                        (
+                            merged_min_row,
+                            merged_max_row,
+                            merged_min_col,
+                            merged_max_col,
+                        ) = merged_bounds
+                        min_row = min(min_row, merged_min_row)
+                        max_row = max(max_row, merged_max_row)
+                        min_column = min(min_column, merged_min_col)
+                        max_column = max(max_column, merged_max_col)
                 evidence: list[ExcelCellEvidence] = []
                 text_values: list[str] = []
                 minimum_font_size: float | None = None
@@ -570,11 +1049,16 @@ def survey_excel_workbook(
                     for cell in evidence
                     if cell.value not in (None, "") and cell.row <= min_row + 2
                 ]
-                title = " ".join(first_rows[:3]).strip() or None
+                title = declared_name or " ".join(first_rows[:3]).strip() or None
                 period = _extract_period(" ".join(text_values[:20]))
                 row_count = len({cell.row for cell in evidence})
                 column_count = len({cell.column for cell in evidence})
-                kind = "table" if row_count >= 2 and column_count >= 2 else "text"
+                kind = (
+                    "table"
+                    if declared_kind in {"excel_table", "auto_filter"}
+                    or (row_count >= 2 and column_count >= 2)
+                    else "text"
+                )
                 width = max_column - min_column + 1
                 height = max_row - min_row + 1
                 small_font = bool(
@@ -668,8 +1152,26 @@ def survey_excel_workbook(
                 ExcelSheetSurvey(
                     name=worksheet.title,
                     index=sheet_index,
-                    visible=True,
+                    visible=visible,
                     used_range=used_range,
+                    role="plain" if visible else "support",
+                    role_confidence=0.0 if visible else 1.0,
+                    role_reasons=(
+                        []
+                        if visible
+                        else ["sheet tersembunyi dipertahankan untuk audit native"]
+                    ),
+                    render_strategy="hybrid" if visible else "native",
+                    nonempty_cell_count=len(data_coordinates),
+                    formula_count=sum(
+                        cell.data_type == "f" for cell in raw_cells
+                    ),
+                    row_count=max_data_row - min_data_row + 1,
+                    column_count=max_data_column - min_data_column + 1,
+                    dependencies=_formula_dependencies(
+                        worksheet, set(formula_book.sheetnames)
+                    ),
+                    charts=chart_evidence,
                     regions=regions,
                 )
             )
@@ -677,10 +1179,12 @@ def survey_excel_workbook(
         formula_book.close()
         value_book.close()
 
+    extraction_order = _classify_excel_sheets(surveyed_sheets)
     return ExcelWorkbookSurvey(
         source_file=str(source),
         workbook_format=source.suffix.lower().lstrip("."),
         sheets=surveyed_sheets,
+        extraction_order=extraction_order,
         warnings=list(dict.fromkeys(warnings)),
     )
 
@@ -1153,12 +1657,44 @@ finally:
         time.sleep(0.5)
 
 
+def _header_candidate_score(
+    nonempty: list[ExcelCellEvidence],
+    following: list[ExcelCellEvidence],
+    *,
+    width: int,
+    text_count: int,
+) -> float:
+    following_numeric = sum(
+        isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
+        for cell in following
+    )
+    coverage = len(nonempty) / width
+    normalized_headers = {str(cell.value).strip().casefold() for cell in nonempty}
+    uniqueness = len(normalized_headers) / len(nonempty)
+    immediate_body_bonus = 3.0 if len(following) >= 2 else 0.0
+    formula_penalty = sum(bool(cell.formula) for cell in nonempty) * 0.75
+    long_text_penalty = sum(
+        len(str(cell.value).strip()) > 80 for cell in nonempty
+    ) * 0.5
+    return (
+        text_count
+        + 2.0 * coverage
+        + uniqueness
+        + immediate_body_bonus
+        + min(2.0, following_numeric * 0.5)
+        - formula_penalty
+        - long_text_penalty
+    )
+
+
 def _detect_header_row(region: ExcelRegion) -> tuple[int, list[str]] | None:
     by_row: dict[int, list[ExcelCellEvidence]] = {}
     for cell in region.cells:
         by_row.setdefault(cell.row, []).append(cell)
-    candidates: list[tuple[int, int, list[str]]] = []
-    for row_number in sorted(by_row)[:8]:
+    candidates: list[tuple[float, int, list[str]]] = []
+    width = max(1, region.max_column - region.min_column + 1)
+    candidate_rows = sorted(by_row)[:12]
+    for row_number in candidate_rows:
         cells = sorted(by_row[row_number], key=lambda item: item.column)
         text_count = sum(
             isinstance(cell.value, str) and bool(cell.value.strip()) for cell in cells
@@ -1170,11 +1706,22 @@ def _detect_header_row(region: ExcelRegion) -> tuple[int, list[str]] | None:
                 headers_by_column.get(column, f"column_{column - region.min_column + 1}")
                 for column in range(region.min_column, region.max_column + 1)
             ]
-            candidates.append((text_count, -row_number, headers))
+            following = [
+                cell
+                for cell in by_row.get(row_number + 1, [])
+                if cell.value not in (None, "")
+            ]
+            score = _header_candidate_score(
+                nonempty,
+                following,
+                width=width,
+                text_count=text_count,
+            )
+            candidates.append((score, row_number, headers))
     if not candidates:
         return None
-    _, negative_row, headers = max(candidates, key=lambda item: (item[0], item[1]))
-    return -negative_row, headers
+    _, header_row, headers = max(candidates, key=lambda item: (item[0], item[1]))
+    return header_row, headers
 
 
 def _unique_sql_headers(headers: list[str]) -> list[str]:
@@ -1185,6 +1732,429 @@ def _unique_sql_headers(headers: list[str]) -> list[str]:
         seen[base] = seen.get(base, 0) + 1
         result.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
     return result
+
+
+def _infer_excel_sqlite_type(values: list[Any]) -> str:
+    """Pilih afinitas SQLite tanpa mengubah teks/kode Excel menjadi angka."""
+    non_empty = [value for value in values if value not in (None, "")]
+    if not non_empty:
+        return "TEXT"
+    if not all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in non_empty
+    ):
+        return "TEXT"
+    if all(
+        isinstance(value, int)
+        or (isinstance(value, float) and value.is_integer())
+        for value in non_empty
+    ):
+        return "INTEGER"
+    return "REAL"
+
+
+def _coerce_excel_sqlite_value(value: Any, sql_type: str) -> Any:
+    """Pertahankan representasi tekstual stabil untuk kolom nonnumerik."""
+    if value is None or sql_type != "TEXT":
+        return value
+    if isinstance(value, (datetime, date, datetime_time)):
+        return value.isoformat()
+    return str(value)
+
+
+def _markdown_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def _region_markdown(region: ExcelRegion, *, max_rows: int = 200) -> str:
+    if region.kind == "text":
+        values = [
+            _markdown_cell(cell.value)
+            for cell in sorted(region.cells, key=lambda item: (item.row, item.column))
+            if cell.value not in (None, "")
+        ]
+        return "\n\n".join(dict.fromkeys(values))
+
+    header = _detect_header_row(region)
+    if header is None:
+        return _region_native_text(
+            sheet_name=region.sheet_name,
+            cell_range=region.cell_range,
+            cells=region.cells,
+        )
+    header_row, raw_headers = header
+    headers = [header or f"Kolom {index}" for index, header in enumerate(raw_headers, 1)]
+    values_by_coordinate = {
+        (cell.row, cell.column): cell.value for cell in region.cells
+    }
+    rows: list[list[str]] = []
+    for row_number in range(header_row + 1, region.max_row + 1):
+        values = [
+            _markdown_cell(values_by_coordinate.get((row_number, column)))
+            for column in range(region.min_column, region.max_column + 1)
+        ]
+        if any(values):
+            rows.append(values)
+    visible_rows = rows[:max_rows]
+    lines = [
+        "| " + " | ".join(_markdown_cell(value) for value in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in visible_rows)
+    if len(rows) > max_rows:
+        lines.append(
+            f"\n> Tabel diringkas: {max_rows} dari {len(rows)} baris ditampilkan. "
+            "Data lengkap tersedia pada artefak CSV/SQLite."
+        )
+    return "\n".join(lines)
+
+
+def _chart_points(
+    series: ExcelChartSeries,
+) -> list[tuple[Any, float | int]]:
+    return [
+        (category, value)
+        for category, value in zip(series.categories, series.values, strict=False)
+        if category not in (None, "") and value is not None
+    ]
+
+
+def _chart_narrative(chart: ExcelChartEvidence) -> list[str]:
+    narratives: list[str] = []
+    for series in chart.series:
+        points = _chart_points(series)
+        if not points:
+            continue
+        date_points = [
+            (category, value)
+            for category, value in points
+            if _category_family(category) == "date"
+        ]
+        if len(date_points) >= 2 and len(date_points) >= len(points) / 2:
+            start_category, start_value = date_points[0]
+            end_category, end_value = date_points[-1]
+            max_category, max_value = max(date_points, key=lambda item: item[1])
+            min_category, min_value = min(date_points, key=lambda item: item[1])
+            change = end_value - start_value
+            narratives.append(
+                f"Seri **{series.name}** berubah dari {_markdown_cell(start_value)} "
+                f"pada {_markdown_cell(start_category)} menjadi {_markdown_cell(end_value)} "
+                f"pada {_markdown_cell(end_category)} (perubahan {_markdown_cell(change)}). "
+                f"Nilai tertinggi {_markdown_cell(max_value)} pada "
+                f"{_markdown_cell(max_category)} dan terendah {_markdown_cell(min_value)} "
+                f"pada {_markdown_cell(min_category)}."
+            )
+        else:
+            max_category, max_value = max(points, key=lambda item: item[1])
+            min_category, min_value = min(points, key=lambda item: item[1])
+            narratives.append(
+                f"Pada seri **{series.name}**, nilai terbesar adalah "
+                f"{_markdown_cell(max_value)} untuk {_markdown_cell(max_category)}, "
+                f"sedangkan nilai terkecil adalah {_markdown_cell(min_value)} untuk "
+                f"{_markdown_cell(min_category)}."
+            )
+    return narratives
+
+
+def _chart_markdown(chart: ExcelChartEvidence, *, max_points: int = 200) -> str:
+    max_length = max((len(series.categories) for series in chart.series), default=0)
+    headers = ["Kategori", *(series.name for series in chart.series)]
+    rows: list[list[str]] = []
+    for index in range(min(max_length, max_points)):
+        category = next(
+            (
+                series.categories[index]
+                for series in chart.series
+                if index < len(series.categories)
+                and series.categories[index] not in (None, "")
+            ),
+            "",
+        )
+        values = [
+            series.values[index] if index < len(series.values) else None
+            for series in chart.series
+        ]
+        if category not in (None, "") or any(value is not None for value in values):
+            rows.append([_markdown_cell(category), *map(_markdown_cell, values)])
+    parts = [
+        f"### Grafik: {chart.title}",
+        "| " + " | ".join(_markdown_cell(value) for value in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+        *("| " + " | ".join(row) + " |" for row in rows),
+    ]
+    narratives = _chart_narrative(chart)
+    if narratives:
+        parts.append("\n".join(f"> {item}" for item in narratives))
+    if max_length > max_points:
+        parts.append(
+            f"> Grafik memiliki {max_length} titik; hanya {max_points} titik pertama "
+            "ditampilkan di Markdown."
+        )
+    if chart.warnings:
+        parts.append("\n".join(f"> Peringatan: {item}" for item in chart.warnings))
+    return "\n".join(parts)
+
+
+def _reference_cell_range(reference: str | None) -> str | None:
+    if not reference or "!" not in reference:
+        return None
+    return reference.rsplit("!", 1)[1].replace("$", "")
+
+
+def _reference_sheet_name(reference: str | None) -> str | None:
+    if not reference or "!" not in reference:
+        return None
+    return reference.rsplit("!", 1)[0].strip("'").replace("''", "'")
+
+
+def _range_contains(outer: str, inner: str) -> bool:
+    try:
+        from openpyxl.utils.cell import range_boundaries
+
+        outer_min_col, outer_min_row, outer_max_col, outer_max_row = range_boundaries(
+            outer
+        )
+        inner_min_col, inner_min_row, inner_max_col, inner_max_row = range_boundaries(
+            inner
+        )
+    except (ImportError, TypeError, ValueError):
+        return False
+    return (
+        outer_min_col <= inner_min_col <= inner_max_col <= outer_max_col
+        and outer_min_row <= inner_min_row <= inner_max_row <= outer_max_row
+    )
+
+
+def _sheet_markdown(
+    sheet: ExcelSheetSurvey,
+    *,
+    artifacts: list[ExcelNativeArtifact],
+    visual_markdown: str | None = None,
+) -> str:
+    parts = [f"## Sheet: {sheet.name}"]
+    if sheet.role == "detail":
+        sheet_artifacts = [
+            artifact for artifact in artifacts if artifact.sheet_name == sheet.name
+        ]
+        if sheet_artifacts:
+            data_rows = sum(artifact.row_count for artifact in sheet_artifacts)
+            columns = next(
+                (artifact.columns for artifact in sheet_artifacts if artifact.columns),
+                [],
+            )
+        else:
+            largest = max(
+                (region for region in sheet.regions if region.kind == "table"),
+                key=lambda region: len(region.cells),
+                default=None,
+            )
+            header = _detect_header_row(largest) if largest else None
+            data_rows = (
+                max(0, largest.max_row - header[0])
+                if largest is not None and header is not None
+                else sheet.row_count
+            )
+            columns = header[1] if header else []
+        parts.append(f"Data detail terdiri dari {data_rows} baris dan {len(columns)} kolom.")
+        if columns:
+            parts.append("Kolom: " + ", ".join(f"`{column}`" for column in columns))
+        for artifact in sheet_artifacts:
+            location = artifact.csv_path or artifact.table_name
+            parts.append(
+                f"- Data lengkap: `{location}` ({artifact.row_count} baris)."
+            )
+        return "\n\n".join(parts)
+    if sheet.role == "support":
+        dependencies = ", ".join(sheet.dependencies) or "tidak ada"
+        parts.append(
+            "Sheet pendukung dipertahankan dalam manifest untuk audit formula. "
+            f"Sumber yang dirujuk: {dependencies}."
+        )
+        return "\n\n".join(parts)
+
+    chart_source_ranges = {
+        cell_range
+        for chart in sheet.charts
+        for series in chart.series
+        for reference, cell_range in (
+            (
+                series.category_reference,
+                _reference_cell_range(series.category_reference),
+            ),
+            (series.value_reference, _reference_cell_range(series.value_reference)),
+        )
+        if cell_range and _reference_sheet_name(reference) == sheet.name
+    }
+    for region in sheet.regions:
+        if region.kind == "mixed":
+            continue
+        if sheet.role == "dashboard" and any(
+            _range_contains(region.cell_range, source_range)
+            for source_range in chart_source_ranges
+        ):
+            continue
+        rendered = _region_markdown(region)
+        if rendered:
+            if region.kind == "table" and region.title:
+                parts.append(f"### {region.title}\n\n{rendered}")
+            else:
+                parts.append(rendered)
+    parts.extend(_chart_markdown(chart) for chart in sheet.charts)
+    if visual_markdown and visual_markdown.strip():
+        parts.append(f"### Konteks visual\n\n{visual_markdown.strip()}")
+    return "\n\n".join(parts)
+
+
+def _workbook_title(survey: ExcelWorkbookSurvey, fallback: str) -> str:
+    ordered_names = survey.extraction_order or [sheet.name for sheet in survey.sheets]
+    sheets = {sheet.name: sheet for sheet in survey.sheets}
+    for name in ordered_names:
+        sheet = sheets[name]
+        if sheet.role != "dashboard":
+            continue
+        for region in sheet.regions:
+            for cell in sorted(region.cells, key=lambda item: (item.row, item.column)):
+                if isinstance(cell.value, str) and cell.value.strip():
+                    return cell.value.strip()
+    return fallback
+
+
+def compose_excel_markdown(
+    survey: ExcelWorkbookSurvey,
+    *,
+    fallback_title: str,
+    artifacts: list[ExcelNativeArtifact] | None = None,
+    visual_by_sheet: dict[str, str] | None = None,
+) -> tuple[str, list[tuple[str, str]]]:
+    artifacts = artifacts or []
+    visual_by_sheet = visual_by_sheet or {}
+    title = _workbook_title(survey, fallback_title)
+    sheets_by_name = {sheet.name: sheet for sheet in survey.sheets}
+    sections: list[tuple[str, str]] = []
+    extraction_order = survey.extraction_order or [
+        sheet.name for sheet in survey.sheets if sheet.visible
+    ]
+    for sheet_name in extraction_order:
+        sheet = sheets_by_name[sheet_name]
+        markdown = _sheet_markdown(
+            sheet,
+            artifacts=artifacts,
+            visual_markdown=visual_by_sheet.get(sheet_name),
+        )
+        sections.append((sheet_name, markdown))
+    if survey.warnings:
+        warning_text = "## Peringatan Workbook\n\n" + "\n".join(
+            f"- {warning}" for warning in survey.warnings
+        )
+        sections.append(("Peringatan Workbook", warning_text))
+    full_markdown = f"# {title}\n\n" + "\n\n---\n\n".join(
+        markdown for _, markdown in sections if markdown.strip()
+    )
+    return full_markdown.strip(), sections
+
+
+def plan_excel_visual_regions(
+    survey: ExcelWorkbookSurvey,
+    *,
+    settings: Settings | None = None,
+) -> list[ExcelRegion]:
+    """Pilih unit visual yang benar-benar memerlukan pembacaan VLM."""
+    resolved_settings = settings or get_settings()
+    planned: list[ExcelRegion] = []
+    for sheet in survey.sheets:
+        if not sheet.visible:
+            continue
+        if sheet.role == "dashboard" and sheet.used_range:
+            cells_by_coordinate = {
+                cell.coordinate: cell
+                for region in sheet.regions
+                for cell in region.cells
+            }
+            min_row = min((region.min_row for region in sheet.regions), default=1)
+            max_row = max((region.max_row for region in sheet.regions), default=1)
+            min_column = min(
+                (region.min_column for region in sheet.regions), default=1
+            )
+            max_column = max(
+                (region.max_column for region in sheet.regions), default=1
+            )
+            planned.append(
+                ExcelRegion(
+                    region_id=f"sheet_{sheet.index + 1:03d}_dashboard",
+                    sheet_name=sheet.name,
+                    sheet_index=sheet.index,
+                    cell_range=sheet.used_range,
+                    min_row=min_row,
+                    max_row=max_row,
+                    min_column=min_column,
+                    max_column=max_column,
+                    title=sheet.name,
+                    kind="mixed",
+                    render_dpi=resolved_settings.excel_base_dpi,
+                    requires_vlm_reading=True,
+                    render_strategy="visual",
+                    persist_native=False,
+                    native_text=_sheet_markdown(sheet, artifacts=[]),
+                    cells=list(cells_by_coordinate.values()),
+                )
+            )
+            continue
+        if sheet.role in {"detail", "support"}:
+            continue
+        planned.extend(
+            region
+            for region in sheet.regions
+            if region.render_strategy in {"visual", "hybrid"}
+            and (region.requires_vlm_reading or region.kind == "mixed")
+        )
+    return planned
+
+
+def _describe_excel_native_artifacts(
+    survey: ExcelWorkbookSurvey,
+    db_path: Path,
+    table_names: list[str],
+    csv_paths: list[Path],
+) -> list[ExcelNativeArtifact]:
+    csv_by_stem = {path.stem: path for path in csv_paths}
+    artifacts: list[ExcelNativeArtifact] = []
+    with closing(sqlite3.connect(db_path)) as connection:
+        for table_name in table_names:
+            quoted = table_name.replace('"', '""')
+            columns = [
+                row[1]
+                for row in connection.execute(
+                    f'PRAGMA table_info("{quoted}")'
+                ).fetchall()
+                if row[1]
+                not in {"source_file", "sheet_name", "region_id", "period", "source_row"}
+            ]
+            row_count = connection.execute(
+                f'SELECT COUNT(*) FROM "{quoted}" WHERE source_file = ?',
+                (survey.source_file,),
+            ).fetchone()[0]
+            sheet_row = connection.execute(
+                f'SELECT sheet_name FROM "{quoted}" WHERE source_file = ? LIMIT 1',
+                (survey.source_file,),
+            ).fetchone()
+            artifacts.append(
+                ExcelNativeArtifact(
+                    sheet_name=sheet_row[0] if sheet_row else "",
+                    table_name=table_name,
+                    row_count=row_count,
+                    columns=columns,
+                    csv_path=(
+                        str(csv_by_stem[table_name])
+                        if table_name in csv_by_stem
+                        else None
+                    ),
+                )
+            )
+    return artifacts
 
 
 def persist_excel_native_data(
@@ -1206,7 +2176,7 @@ def persist_excel_native_data(
         ]
     grouped_regions: dict[tuple[str, tuple[str, ...]], list[tuple[ExcelRegion, int]]] = {}
 
-    with sqlite3.connect(target) as connection:
+    with closing(sqlite3.connect(target)) as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS excel_regions (
@@ -1290,7 +2260,7 @@ def persist_excel_native_data(
                         ),
                     )
 
-                header = _detect_header_row(region)
+                header = _detect_header_row(region) if region.persist_native else None
                 if header:
                     header_row, raw_headers = header
                     sql_headers = _unique_sql_headers(raw_headers)
@@ -1303,7 +2273,29 @@ def persist_excel_native_data(
                 (sheet_name + "|" + "|".join(headers)).encode("utf-8")
             ).hexdigest()[:8]
             table_name = f"excel_{_slug(sheet_name)}_{signature}"
-            quoted_columns = ", ".join(f'"{header}"' + " NUMERIC" for header in headers)
+            prepared_rows: list[tuple[ExcelRegion, int, list[Any]]] = []
+            for region, header_row in group:
+                values_by_coordinate = {
+                    (cell.row, cell.column): cell.value for cell in region.cells
+                }
+                for row in range(header_row + 1, region.max_row + 1):
+                    values = [
+                        values_by_coordinate.get((row, column))
+                        for column in range(region.min_column, region.max_column + 1)
+                    ]
+                    if any(value not in (None, "") for value in values):
+                        prepared_rows.append((region, row, values))
+
+            column_types = [
+                _infer_excel_sqlite_type(
+                    [values[index] for _, _, values in prepared_rows]
+                )
+                for index in range(len(headers))
+            ]
+            quoted_columns = ", ".join(
+                f'"{header}" {sql_type}'
+                for header, sql_type in zip(headers, column_types, strict=True)
+            )
             connection.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS "{table_name}" (
@@ -1330,37 +2322,56 @@ def persist_excel_native_data(
             ]
             column_sql = ", ".join(f'"{column}"' for column in insert_columns)
             placeholders = ", ".join("?" for _ in insert_columns)
-            for region, header_row in group:
-                values_by_coordinate = {
-                    (cell.row, cell.column): cell.value for cell in region.cells
-                }
-                for row in range(header_row + 1, region.max_row + 1):
-                    values = [
-                        values_by_coordinate.get((row, column))
-                        for column in range(region.min_column, region.max_column + 1)
-                    ]
-                    if not any(value not in (None, "") for value in values):
-                        continue
-                    connection.execute(
-                        f'INSERT INTO "{table_name}" ({column_sql}) VALUES ({placeholders})',
-                        (
-                            survey.source_file,
-                            region.sheet_name,
-                            region.region_id,
-                            region.period,
-                            row,
-                            *values,
-                        ),
-                    )
+            for region, row, values in prepared_rows:
+                stored_values = [
+                    _coerce_excel_sqlite_value(value, sql_type)
+                    for value, sql_type in zip(values, column_types, strict=True)
+                ]
+                connection.execute(
+                    f'INSERT INTO "{table_name}" ({column_sql}) VALUES ({placeholders})',
+                    (
+                        survey.source_file,
+                        region.sheet_name,
+                        region.region_id,
+                        region.period,
+                        row,
+                        *stored_values,
+                    ),
+                )
             created_tables.append(table_name)
         connection.commit()
     return created_tables
 
 
+def convert_excel_for_extraction(
+    excel_path: str | Path,
+    output_dir: str | Path,
+) -> Path:
+    """Render rencana visual adaptif, dengan konversi penuh sebagai fallback."""
+    source = Path(excel_path).resolve()
+    target_dir = Path(output_dir).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    settings = get_settings()
+    target = target_dir / f"{source.stem}.pdf"
+    try:
+        survey = survey_excel_workbook(source, settings=settings)
+        visual_regions = plan_excel_visual_regions(survey, settings=settings)
+        if visual_regions and _convert_excel_regions_to_pdf(
+            source,
+            target,
+            target_dir / "lo_region_profile",
+            visual_regions,
+        ):
+            return target
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning("Survei adaptif gagal; gunakan konversi penuh: %s", exc)
+    return convert_excel_to_pdf(source, target_dir)
+
+
 def excel_page_count(excel_path: str | Path) -> int:
-    """Hitung jumlah halaman Excel melalui hasil konversi PDF sementara."""
+    """Hitung jumlah unit visual dari rencana ekstraksi adaptif."""
     with tempfile.TemporaryDirectory(prefix="excel_count_") as tmp:
-        pdf_path = convert_excel_to_pdf(excel_path, tmp)
+        pdf_path = convert_excel_for_extraction(excel_path, tmp)
         return pdf_page_count(pdf_path)
 
 
@@ -1380,10 +2391,10 @@ def process_multipage_excel(
     resume: bool = False,
 ) -> ExtractedDocument:
     """
-    Proses workbook Excel dengan jalur visual yang sama seperti PDF.
+    Proses workbook Excel dengan jalur native dan visual yang adaptif.
 
-    File Excel dikonversi ke PDF sementara, lalu halaman PDF dirender menjadi
-    gambar dan diproses oleh VLM satu per satu.
+    Dashboard atau blok campuran dirender untuk VLM, sedangkan ringkasan, formula,
+    grafik native, dan data detail dipertahankan langsung dari struktur workbook.
     """
     path_obj = Path(excel_path).resolve()
     if not path_obj.exists():
@@ -1393,7 +2404,7 @@ def process_multipage_excel(
         temporary_root = Path(tmp)
         settings = getattr(pipeline, "settings", None) or get_settings()
         survey: ExcelWorkbookSurvey | None = None
-        regions: list[ExcelRegion] = []
+        visual_regions: list[ExcelRegion] = []
         survey_source = path_obj
         if settings.excel_native_survey:
             try:
@@ -1409,15 +2420,12 @@ def process_multipage_excel(
                 survey = split_excel_regions_into_tiles(survey, settings=settings)
                 survey.source_file = str(path_obj)
                 survey.workbook_format = path_obj.suffix.lower().lstrip(".")
-                regions = [
-                    region
-                    for sheet in survey.sheets
-                    if sheet.visible
-                    for region in sheet.regions
-                ]
+                visual_regions = plan_excel_visual_regions(
+                    survey, settings=settings
+                )
                 logger.info(
-            "[Excel] Survei native menemukan %d region pada %d sheet terlihat.",
-                    len(regions),
+                    "[Excel] Survei native merencanakan %d unit visual pada %d sheet terlihat.",
+                    len(visual_regions),
                     sum(sheet.visible for sheet in survey.sheets),
                 )
             except (OSError, ValueError, RuntimeError, TypeError) as exc:
@@ -1428,55 +2436,73 @@ def process_multipage_excel(
 
         pdf_path = temporary_root / f"{path_obj.stem}.pdf"
         region_rendered = False
-        if settings.excel_region_rendering and regions:
+        if settings.excel_region_rendering and visual_regions:
             region_rendered = _convert_excel_regions_to_pdf(
                 path_obj,
                 pdf_path,
                 temporary_root / "lo_region_profile",
-                regions,
+                visual_regions,
             )
-        if not region_rendered:
+        needs_visual_pipeline = bool(visual_regions) or survey is None
+        if not region_rendered and needs_visual_pipeline:
             logger.info("[Excel] Mengonversi '%s' ke PDF sementara...", path_obj.name)
             pdf_path = convert_excel_to_pdf(path_obj, tmp)
-        logger.info(
-            "[Excel] Konversi selesai, lanjut render halaman ke gambar dan ekstraksi VLM."
-        )
+        elif not needs_visual_pipeline:
+            logger.info("[Excel] Tidak ada unit visual; ekstraksi diselesaikan secara native.")
         native_by_page = (
-            {index: region.native_text for index, region in enumerate(regions, start=1)}
+            {
+                index: region.native_text
+                for index, region in enumerate(visual_regions, start=1)
+            }
             if region_rendered
             else None
         )
         dpi_by_page = (
-            {index: region.render_dpi for index, region in enumerate(regions, start=1)}
+            {
+                index: region.render_dpi
+                for index, region in enumerate(visual_regions, start=1)
+            }
             if region_rendered
             else None
         )
         rescue_by_page = (
             {
                 index: region.requires_vlm_reading
-                for index, region in enumerate(regions, start=1)
+                for index, region in enumerate(visual_regions, start=1)
             }
             if region_rendered
             else None
         )
-        result = process_multipage_pdf(
-            pdf_path=pdf_path,
-            pipeline=pipeline,
-            llm=llm,
-            output_dir=output_dir,
-            dpi=dpi,
-            forced_specs=forced_specs,
-            forced_doc_type=forced_doc_type,
-            db_path=db_path,
-            auto_tabular_db=auto_tabular_db,
-            force_all_tables=force_all_tables,
-            output_markdown_path=output_markdown_path,
-            source_file_for_records=path_obj,
-            resume=resume,
-            native_text_by_page_override=native_by_page,
-            dpi_by_page_override=dpi_by_page,
-            force_vlm_reading_by_page_override=rescue_by_page,
-        )
+        if needs_visual_pipeline:
+            logger.info(
+                "[Excel] Konversi selesai, lanjut render unit visual dan ekstraksi VLM."
+            )
+            result = process_multipage_pdf(
+                pdf_path=pdf_path,
+                pipeline=pipeline,
+                llm=llm,
+                output_dir=output_dir,
+                dpi=dpi,
+                forced_specs=forced_specs,
+                forced_doc_type=forced_doc_type,
+                db_path=db_path,
+                auto_tabular_db=auto_tabular_db,
+                force_all_tables=force_all_tables,
+                output_markdown_path=None,
+                source_file_for_records=path_obj,
+                resume=resume,
+                native_text_by_page_override=native_by_page,
+                dpi_by_page_override=dpi_by_page,
+                force_vlm_reading_by_page_override=rescue_by_page,
+            )
+        else:
+            result = ExtractedDocument(
+                source_file=str(path_obj),
+                title=path_obj.stem,
+                doc_type="spreadsheet",
+                full_markdown="",
+                total_pages=1,
+            )
 
         if survey is not None:
             result.excel_workbook = survey
@@ -1518,6 +2544,7 @@ def process_multipage_excel(
                 result.excel_native_tables = persist_excel_native_data(
                     survey, native_db_path
                 )
+                csv_paths: list[Path] = []
                 try:
                     from .tabular_db import TabularDatabaseManager
 
@@ -1526,60 +2553,74 @@ def process_multipage_excel(
                         if native_db_path.parent.name == "databases"
                         else native_db_path.parent / "csv"
                     )
-                    TabularDatabaseManager(native_db_path).export_to_csv(
+                    csv_paths = TabularDatabaseManager(native_db_path).export_to_csv(
                         output_dir=csv_dir
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[Excel] Ekspor data native ke CSV gagal: %s", exc)
+                result.excel_native_artifacts = _describe_excel_native_artifacts(
+                    survey,
+                    native_db_path,
+                    result.excel_native_tables,
+                    csv_paths,
+                )
 
-        if region_rendered and len(result.pages) == len(regions):
-            blocks: list[str] = []
-            current_sheet: str | None = None
-            tile_groups: dict[str, list[ExcelRegion]] = {}
-            for region in regions:
-                if region.parent_region_id:
-                    tile_groups.setdefault(region.parent_region_id, []).append(region)
-            rendered_tile_groups: set[str] = set()
-            for page, region in zip(result.pages, regions, strict=True):
-                if region.parent_region_id:
-                    parent_id = region.parent_region_id
-                    group = tile_groups[parent_id]
-                    if parent_id in rendered_tile_groups:
-                        continue
-                    rendered_tile_groups.add(parent_id)
-                    combined = _combine_tile_regions(group)
-                    page.markdown_content = _native_region_markdown(combined)
-                    region = combined
-                page_parts: list[str] = []
-                if region.sheet_name != current_sheet:
-                    page_parts.append(f"## Sheet: {region.sheet_name}")
-                    current_sheet = region.sheet_name
-                label = region.period or region.title or region.cell_range
-                page_parts.append(f"### {label}")
-                page_parts.append(
-                    f"<!-- excel_region: {region.region_id}; range: "
-                    f"'{region.sheet_name}'!{region.cell_range} -->"
-                )
-                page_parts.append(page.markdown_content.strip())
-                page.markdown_content = "\n\n".join(
-                    part for part in page_parts if part
-                ).strip()
-                blocks.append(page.markdown_content)
-            title = result.title or path_obj.stem
-            result.title = title
-            result.full_markdown = f"# {title}\n\n" + "\n\n---\n\n".join(blocks)
+            visual_by_sheet: dict[str, str] = {}
+            if region_rendered and len(result.pages) == len(visual_regions):
+                tile_groups: dict[str, list[ExcelRegion]] = {}
+                for region in visual_regions:
+                    if region.parent_region_id:
+                        tile_groups.setdefault(region.parent_region_id, []).append(region)
+                rendered_tile_groups: set[str] = set()
+                for page, region in zip(result.pages, visual_regions, strict=True):
+                    if region.parent_region_id:
+                        parent_id = region.parent_region_id
+                        if parent_id in rendered_tile_groups:
+                            continue
+                        rendered_tile_groups.add(parent_id)
+                        combined = _combine_tile_regions(tile_groups[parent_id])
+                        content = _native_region_markdown(combined)
+                        sheet_name = combined.sheet_name
+                    else:
+                        content = page.markdown_content.strip()
+                        sheet_name = region.sheet_name
+                    if content:
+                        visual_by_sheet[sheet_name] = "\n\n".join(
+                            part
+                            for part in (
+                                visual_by_sheet.get(sheet_name),
+                                content,
+                            )
+                            if part
+                        )
+            result.full_markdown, _ = compose_excel_markdown(
+                survey,
+                fallback_title=result.title or path_obj.stem,
+                artifacts=result.excel_native_artifacts,
+                visual_by_sheet=visual_by_sheet,
+            )
+            result.title = _workbook_title(survey, result.title or path_obj.stem)
+            result.total_tables = sum(
+                region.kind == "table"
+                for sheet in survey.sheets
+                for region in sheet.regions
+                if sheet.visible and sheet.role != "support"
+            )
             if output_markdown_path:
-                Path(output_markdown_path).write_text(
-                    result.full_markdown, encoding="utf-8"
-                )
+                markdown_target = Path(output_markdown_path).resolve()
+                markdown_target.parent.mkdir(parents=True, exist_ok=True)
+                markdown_target.write_text(result.full_markdown, encoding="utf-8")
 
         return result
 
 
 __all__ = [
+    "compose_excel_markdown",
+    "convert_excel_for_extraction",
     "convert_excel_to_pdf",
     "excel_page_count",
     "persist_excel_native_data",
+    "plan_excel_visual_regions",
     "process_multipage_excel",
     "split_excel_regions_into_tiles",
     "survey_excel_workbook",

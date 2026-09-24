@@ -2603,18 +2603,33 @@ def _compare_table_values(manager: TabularDatabaseManager, md_tables: list[dict[
                 discrepancies.append(f"Tabel '{target}': kolom sumber tidak ditemukan di SQLite: {', '.join(sorted(missing))}.")
                 continue
 
-            def normalize(value: Any, column: str, from_sql: bool, *, column_types: dict[str, str] = types) -> str:
+            def normalize(
+                value: Any,
+                column: str,
+                *,
+                column_types: dict[str, str] = types,
+            ) -> str:
+                text = clean_cell_text(str(value)) if value is not None else ""
                 if column_types[column] in ('REAL', 'NUMERIC', 'INTEGER'):
-                    number = value if from_sql else parse_numeric_value(str(value))
-                    return '' if number is None else format(float(number), '.12g')
-                text = clean_cell_text(str(value)) if value is not None else ''
+                    number = parse_numeric_value(text)
+                    if number is not None:
+                        return format(float(number), ".12g")
+                    # SQLite tetap dapat menyimpan teks pada kolom berafinitas
+                    # numerik. Database Excel lama memakai NUMERIC untuk semua
+                    # kolom, termasuk label dan status, jadi pertahankan teksnya.
+                    return text
                 if column_types[column] == 'DATE' or column in ('txn_date', 'value_date', 'date'):
                     text = parse_date_value(text) or text
                 return text or ''
 
-            expected = Counter(tuple(normalize(row.get(c, ''), c, False) for c in columns) for row in rows)
+            expected = Counter(
+                tuple(normalize(row.get(c, ''), c) for c in columns) for row in rows
+            )
             selected = ', '.join('"' + c.replace('"', '""') + '"' for c in columns)
-            actual = Counter(tuple(normalize(value, c, True) for value, c in zip(row, columns)) for row in conn.execute(f'SELECT {selected} FROM {quoted}'))
+            actual = Counter(
+                tuple(normalize(value, c) for value, c in zip(row, columns))
+                for row in conn.execute(f'SELECT {selected} FROM {quoted}')
+            )
             if expected != actual:
                 discrepancies.append(f"Tabel '{target}': isi nilai berbeda (baris sumber tidak cocok: {sum((expected - actual).values())}; baris SQL tidak cocok: {sum((actual - expected).values())}).")
     return discrepancies

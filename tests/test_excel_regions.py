@@ -1,13 +1,18 @@
+"""Regression tests for native and visual Excel region extraction."""
+
 import gc
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, Reference
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.worksheet.table import Table
 
 from app.config import Settings
 from app.excel import (
@@ -15,15 +20,51 @@ from app.excel import (
     _convert_excel_regions_to_pdf,
     _convert_workbook_to_xlsx_copy,
     _estimate_native_tokens,
+    compose_excel_markdown,
     persist_excel_native_data,
+    plan_excel_visual_regions,
     split_excel_regions_into_tiles,
     survey_excel_workbook,
 )
 from app.pdf import pdf_page_count
 from app.ppt import _find_libreoffice_binary
+from app.schemas import ExcelNativeArtifact
 
 
 class TestExcelRegionSurvey(unittest.TestCase):
+    def _build_adaptive_workbook(self, path: Path) -> None:
+        workbook = Workbook()
+        data = workbook.active
+        data.title = "Records"
+        data.append(["ID", "Area", "Amount", "Status"])
+        for row in range(1, 41):
+            data.append([row, f"Area {row % 5}", row * 1250, "Open"])
+
+        summary = workbook.create_sheet("Rollup")
+        summary.append(["Metric", "Value"])
+        for row in range(2, 14):
+            summary.append([f"Metric {row - 1}", f"=SUM(Records!C2:C{row + 1})"])
+
+        support = workbook.create_sheet("ChartData")
+        support.append(["Period", "Value"])
+        for row in range(2, 14):
+            support.append([f"Period {row - 1}", f"=Records!C{row}"])
+
+        dashboard = workbook.create_sheet("Visual")
+        dashboard.merge_cells("A1:H1")
+        dashboard["A1"] = "Operational Monitoring"
+        dashboard["A3"] = "=ChartData!A1"
+        chart = LineChart()
+        chart.title = "Movement"
+        chart.add_data(
+            Reference(support, min_col=2, min_row=1, max_row=13),
+            titles_from_data=True,
+        )
+        chart.set_categories(Reference(support, min_col=1, min_row=2, max_row=13))
+        chart.anchor = "A5"
+        dashboard.add_chart(chart)
+        workbook.save(path)
+
     def test_token_budget_splits_dense_cells_without_losing_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "dense.xlsx"
@@ -136,6 +177,21 @@ class TestExcelRegionSurvey(unittest.TestCase):
         sheet.add_chart(chart)
         workbook.save(path)
 
+    def _build_hidden_workbook(self, path: Path) -> None:
+        workbook = Workbook()
+        cover = workbook.active
+        cover.title = "Cover"
+        cover["A1"] = "Visible report"
+        for name, code, amount, state in (
+            ("HiddenData", "A-01", 1250, "hidden"),
+            ("VeryHiddenData", "B-02", 2500, "veryHidden"),
+        ):
+            sheet = workbook.create_sheet(name)
+            sheet.append(["Code", "Amount"])
+            sheet.append([code, amount])
+            sheet.sheet_state = state
+        workbook.save(path)
+
     def test_side_by_side_tables_become_separate_regions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "billing.xlsx"
@@ -165,6 +221,188 @@ class TestExcelRegionSurvey(unittest.TestCase):
             chart_regions = [region for region in regions if region.title == "Chart 1"]
             self.assertEqual(len(chart_regions), 1)
             self.assertTrue(chart_regions[0].requires_vlm_reading)
+
+    def test_declared_tables_are_locked_regions_even_when_touching(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "touching.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Touching"
+            for row in (
+                ("Left ID", "Left Value", "Right ID", "Right Value"),
+                (1, 10, "A", 100),
+                (2, 20, "B", 200),
+            ):
+                sheet.append(row)
+            sheet.add_table(Table(displayName="LeftTable", ref="A1:B3"))
+            sheet.add_table(Table(displayName="RightTable", ref="C1:D3"))
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path)
+            table_regions = [
+                region for region in survey.sheets[0].regions if region.kind == "table"
+            ]
+
+            self.assertEqual(
+                [(region.title, region.cell_range) for region in table_regions],
+                [("LeftTable", "A1:B3"), ("RightTable", "C1:D3")],
+            )
+
+    def test_diagonal_contact_does_not_merge_independent_regions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "diagonal.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = "First"
+            sheet["B1"] = "Value"
+            sheet["A2"] = "A"
+            sheet["B2"] = 1
+            sheet["C3"] = "Second"
+            sheet["D3"] = "Value"
+            sheet["C4"] = "B"
+            sheet["D4"] = 2
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path)
+
+            self.assertEqual(
+                [region.cell_range for region in survey.sheets[0].regions],
+                ["A1:B2", "C3:D4"],
+            )
+
+    def test_static_named_range_is_used_as_region_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "named-range.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Named Data"
+            sheet.append(["Code", "Amount", "Other", "Label", "Value"])
+            sheet.append(["A", 10, "x", "One", 1])
+            sheet.append(["B", 20, "y", "Two", 2])
+            workbook.defined_names.add(
+                DefinedName(
+                    "PrimaryBlock",
+                    attr_text="'Named Data'!$A$1:$B$3",
+                )
+            )
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path)
+
+            self.assertEqual(
+                [
+                    (region.title, region.cell_range)
+                    for region in survey.sheets[0].regions
+                ],
+                [("PrimaryBlock", "A1:B3"), ("Other Label Value", "C1:E3")],
+            )
+
+    def test_header_detection_prefers_row_followed_by_table_body(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "preamble.xlsx"
+            database_path = root / "preamble.sqlite"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["Quarterly", "Revenue", "Report", "2026"])
+            sheet.append([None, None, None, None])
+            sheet.append(["ID", "Area", "Amount", "Status"])
+            sheet.append([1, "West", 100, "Open"])
+            sheet.append([2, "East", 200, "Closed"])
+            workbook.defined_names.add(
+                DefinedName("ReportBlock", attr_text="'Sheet'!$A$1:$D$5")
+            )
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path)
+            created = persist_excel_native_data(survey, database_path)
+
+            self.assertEqual(len(created), 1)
+            with closing(sqlite3.connect(database_path)) as connection:
+                columns = [
+                    row[1]
+                    for row in connection.execute(
+                        f'PRAGMA table_info("{created[0]}")'
+                    )
+                ]
+                rows = connection.execute(
+                    f'SELECT id, area, amount, status FROM "{created[0]}" '
+                    "ORDER BY source_row"
+                ).fetchall()
+            self.assertEqual(columns[-4:], ["id", "area", "amount", "status"])
+            self.assertEqual(rows, [(1, "West", 100, "Open"), (2, "East", 200, "Closed")])
+
+    def test_styled_blank_cells_bridge_sparse_table_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "styled-gap.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = "Key"
+            sheet["C1"] = "Value"
+            sheet["A2"] = "A"
+            sheet["C2"] = 10
+            thin = Side(style="thin")
+            for row in range(1, 3):
+                for column in range(1, 4):
+                    sheet.cell(row, column).border = Border(
+                        left=thin,
+                        right=thin,
+                        top=thin,
+                        bottom=thin,
+                    )
+            workbook.save(path)
+
+            survey = survey_excel_workbook(path)
+
+            self.assertEqual(len(survey.sheets[0].regions), 1)
+            self.assertEqual(survey.sheets[0].regions[0].cell_range, "A1:C2")
+            self.assertEqual(survey.sheets[0].regions[0].kind, "table")
+
+    def test_hidden_sheets_are_preserved_as_native_support(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "hidden.xlsx"
+            database_path = root / "hidden.sqlite"
+            self._build_hidden_workbook(path)
+
+            survey = survey_excel_workbook(path)
+            created = persist_excel_native_data(survey, database_path)
+
+            support_sheets = {
+                sheet.name: sheet
+                for sheet in survey.sheets
+                if sheet.name in {"HiddenData", "VeryHiddenData"}
+            }
+            self.assertEqual(set(support_sheets), {"HiddenData", "VeryHiddenData"})
+            self.assertTrue(all(not sheet.visible for sheet in support_sheets.values()))
+            self.assertTrue(
+                all(sheet.role == "support" for sheet in support_sheets.values())
+            )
+            self.assertTrue(
+                all(len(sheet.regions) == 1 for sheet in support_sheets.values())
+            )
+            self.assertTrue(set(support_sheets).isdisjoint(survey.extraction_order))
+            markdown, _ = compose_excel_markdown(
+                survey,
+                fallback_title="Hidden workbook",
+            )
+            self.assertNotIn("HiddenData", markdown)
+            self.assertNotIn("VeryHiddenData", markdown)
+            self.assertEqual(len(created), 2)
+            with closing(sqlite3.connect(database_path)) as connection:
+                rows = {
+                    connection.execute(
+                        f'SELECT sheet_name, code, amount FROM "{table_name}"'
+                    ).fetchone()
+                    for table_name in created
+                }
+            self.assertEqual(
+                rows,
+                {
+                    ("HiddenData", "A-01", 1250),
+                    ("VeryHiddenData", "B-02", 2500),
+                },
+            )
 
     def test_native_tables_group_matching_monthly_regions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -198,6 +436,100 @@ class TestExcelRegionSurvey(unittest.TestCase):
             self.assertEqual(periods, {"FEB 2026", "MAR 2026"})
             self.assertEqual(source_rows, 4)
             self.assertGreater(evidence_count, 20)
+
+    def test_adaptive_roles_and_visual_plan_are_content_driven(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "arbitrary-name.xlsx"
+            self._build_adaptive_workbook(path)
+
+            survey = survey_excel_workbook(path)
+            roles = {sheet.name: sheet.role for sheet in survey.sheets}
+            visual_regions = plan_excel_visual_regions(survey)
+
+            self.assertEqual(roles["Visual"], "dashboard")
+            self.assertEqual(roles["Rollup"], "summary")
+            self.assertEqual(roles["ChartData"], "support")
+            self.assertEqual(roles["Records"], "detail")
+            self.assertEqual(survey.extraction_order[0], "Visual")
+            self.assertEqual(survey.extraction_order[-1], "ChartData")
+            self.assertEqual(len(visual_regions), 1)
+            self.assertEqual(visual_regions[0].sheet_name, "Visual")
+            self.assertEqual(visual_regions[0].render_strategy, "visual")
+
+    def test_native_table_infers_sqlite_types_from_excel_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "adaptive.xlsx"
+            database_path = root / "adaptive.sqlite"
+            self._build_adaptive_workbook(path)
+
+            survey = survey_excel_workbook(path)
+            created = persist_excel_native_data(survey, database_path)
+            records_table = next(
+                table for table in created if table.startswith("excel_records_")
+            )
+
+            with closing(sqlite3.connect(database_path)) as connection:
+                column_types = {
+                    row[1]: row[2]
+                    for row in connection.execute(
+                        f'PRAGMA table_info("{records_table}")'
+                    )
+                }
+                first_row = connection.execute(
+                    f'SELECT id, area, amount, status FROM "{records_table}" '
+                    "ORDER BY source_row LIMIT 1"
+                ).fetchone()
+
+            self.assertEqual(
+                column_types,
+                {
+                    "source_file": "TEXT",
+                    "sheet_name": "TEXT",
+                    "region_id": "TEXT",
+                    "period": "TEXT",
+                    "source_row": "INTEGER",
+                    "id": "INTEGER",
+                    "area": "TEXT",
+                    "amount": "INTEGER",
+                    "status": "TEXT",
+                },
+            )
+            self.assertEqual(first_row, (1, "Area 1", 1250, "Open"))
+
+    def test_markdown_summarizes_charts_and_links_complete_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "adaptive.xlsx"
+            csv_path = Path(directory) / "records.csv"
+            self._build_adaptive_workbook(path)
+            survey = survey_excel_workbook(path)
+            chart = next(sheet for sheet in survey.sheets if sheet.name == "Visual").charts[0]
+            chart.series[0].name = "Value"
+            chart.series[0].categories = ["2026-01", "2026-02", "Closed"]
+            chart.series[0].values = [10, 15, None]
+            chart.warnings = ["Seri mencampur kategori periode dengan kategori nonperiode."]
+
+            markdown, sections = compose_excel_markdown(
+                survey,
+                fallback_title="adaptive",
+                artifacts=[
+                    ExcelNativeArtifact(
+                        sheet_name="Records",
+                        table_name="excel_records_test",
+                        row_count=40,
+                        columns=["id", "area", "amount", "status"],
+                        csv_path=str(csv_path),
+                    )
+                ],
+            )
+
+            self.assertIn("Operational Monitoring", markdown)
+            self.assertIn("### Grafik: Movement", markdown)
+            self.assertIn("| Kategori | Value |", markdown)
+            self.assertIn("Data lengkap", markdown)
+            self.assertIn(str(csv_path), markdown)
+            self.assertIn("Sheet pendukung", markdown)
+            self.assertEqual(sections[0][0], "Visual")
 
     def test_wide_region_is_tiled_and_can_be_combined(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

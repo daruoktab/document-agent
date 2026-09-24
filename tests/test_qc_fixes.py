@@ -3,6 +3,7 @@ import csv
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +50,28 @@ class TestQCFixes(unittest.TestCase):
                 with sqlite3.connect(self.db) as conn:
                     conn.execute(f'UPDATE transaction_details SET {column}=?', (value,))
                 self.assertEqual(cross_verify_dual_track(MD, self.db).guardrail_status, 'WARNING')
+
+    def test_audit_accepts_text_in_legacy_numeric_excel_columns(self):
+        markdown = (
+            '<!-- sqlite_table: excel_records -->\n'
+            '| Status | Amount |\n'
+            '|---|---|\n'
+            '| Open | 1250 |'
+        )
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.execute('CREATE TABLE excel_records (status NUMERIC, amount NUMERIC)')
+            conn.execute('INSERT INTO excel_records VALUES (?, ?)', ('Open', 1250))
+            conn.commit()
+
+        report = cross_verify_dual_track(markdown, self.db)
+        self.assertEqual(report.guardrail_status, 'PASSED')
+
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.execute("UPDATE excel_records SET status = 'Closed'")
+            conn.commit()
+        report = cross_verify_dual_track(markdown, self.db)
+        self.assertEqual(report.guardrail_status, 'WARNING')
+        self.assertTrue(any('isi nilai berbeda' in item for item in report.discrepancies))
 
     def test_page_replacement_preserves_other_pages_and_sources(self):
         self.ingest()
