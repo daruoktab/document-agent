@@ -26,6 +26,7 @@ from .schemas import (
     DiagramExtractionResult,
     DiagramFormatRecommendation,
     DiagramTypeLiteral,
+    _coerce_diagram_type_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -444,6 +445,8 @@ def render_mermaid_to_png(
 
     except Exception as exc:  # noqa: BLE001
         err_msg = str(exc)
+        if "[WinError 2]" in err_msg:
+            err_msg = f"Mermaid CLI tidak terinstal atau tidak dapat dijalankan: {err_msg}"
         logger.warning("[Diagram:Render] Gagal merender diagram Mermaid: %s", err_msg)
         return False, None, err_msg
 
@@ -452,6 +455,7 @@ def get_diagram_recommendation(
     diagram_type: DiagramTypeLiteral | str,
 ) -> DiagramFormatRecommendation:
     """Berikan rekomendasi format ekstraksi berdasarkan kategori diagram."""
+    normalized_type = cast(DiagramTypeLiteral, _coerce_diagram_type_value(diagram_type))
     mermaid_compatible = {
         "flowchart": (
             "flowchart TD",
@@ -528,7 +532,7 @@ def get_diagram_recommendation(
     if diagram_type in mermaid_compatible:
         syntax, fmt, rationale = mermaid_compatible[diagram_type]
         return DiagramFormatRecommendation(
-            diagram_type=diagram_type,
+            diagram_type=normalized_type,
             recommended_format=fmt,
             is_mermaid_compatible=True,
             suggested_syntax=syntax,
@@ -548,7 +552,7 @@ def get_diagram_recommendation(
         "Format visual tidak kompatibel dengan generator kode diagram relasional.",
     )
     return DiagramFormatRecommendation(
-        diagram_type=diagram_type,
+        diagram_type=normalized_type,
         recommended_format="text_description",
         is_mermaid_compatible=False,
         suggested_syntax=None,

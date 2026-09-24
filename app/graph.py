@@ -291,11 +291,10 @@ class DocumentExtractionPipeline:
             ocr_risk_flags=ocr_payload.risk_flags,
             textreflow_applied=ocr_payload.textreflow_applied,
             textreflow_reason=ocr_payload.textreflow_reason,
-            rotation_degrees=cast(
-                Any,
+            rotation_degrees=(
                 final_state.get("inspection_rotation_degrees", 0)
                 if ocr_payload.decision == "blank_page"
-                else ocr_payload.rotation_degrees,
+                else ocr_payload.rotation_degrees
             ),
             vlm_visual_rescue=bool(final_state.get("requires_vlm_reading", False)),
         )
@@ -416,6 +415,7 @@ class DocumentExtractionPipeline:
         self, state: DocumentExtractionState
     ) -> DocumentExtractionState:
         """OCR primer dengan quality gate; hasil meragukan tidak langsung dipercaya."""
+        result: OCRExtractionResult
         if self.ocr_extractor is None:
             result = OCRExtractionResult(
                 status="disabled",
@@ -434,7 +434,8 @@ class DocumentExtractionPipeline:
 
         inspection_rotation = int(state.get("inspection_rotation_degrees", 0))
         result.rotation_degrees = cast(
-            Any, (inspection_rotation + result.rotation_degrees) % 360
+            Literal[0, 90, 180, 270],
+            (inspection_rotation + result.rotation_degrees) % 360,
         )
         if result.oriented_image_path:
             oriented_path = result.oriented_image_path

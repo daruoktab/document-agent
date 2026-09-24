@@ -3,6 +3,7 @@ import io
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -33,7 +34,7 @@ class IngestApiTests(unittest.TestCase):
         md = self.root / f"{path.stem}.md"
         md.write_text("# Hasil\nTeks.", encoding="utf-8")
         db = self.root / f"{path.stem}.sqlite"
-        with sqlite3.connect(db) as conn:
+        with closing(sqlite3.connect(db)) as conn, conn:
             conn.execute('CREATE TABLE "data/item" (nama TEXT, jumlah INTEGER)')
             conn.execute(
                 'INSERT INTO "data/item" VALUES (?, ?)', ('Kopi, "A"\nBaru', 2)
@@ -52,7 +53,7 @@ class IngestApiTests(unittest.TestCase):
                 {"document.md", "document.sql", "csv/data_item.csv"},
             )
             self.assertTrue(archive.read("document.md").decode().startswith("# Hasil"))
-            with sqlite3.connect(":memory:") as conn:
+            with closing(sqlite3.connect(":memory:")) as conn, conn:
                 conn.executescript(archive.read("document.sql").decode())
                 self.assertEqual(
                     conn.execute('SELECT jumlah FROM "data/item"').fetchone(), (2,)

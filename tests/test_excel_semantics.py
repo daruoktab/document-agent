@@ -188,7 +188,7 @@ class TestExcelLayoutSemantics(unittest.TestCase):
         data.append(["Month", "Status", "Cost"])
         for month in range(1, 7):
             for status in ("DONE", "NOTYET"):
-                data.append([datetime(2026, month, 1), status, month * 100])
+                data.append([datetime(2026, month, 1), status, month * 100])  # noqa: DTZ001 - Excel stores timezone-naive dates.
 
         pivot = workbook.create_sheet("Pivot")
         pivot.append(["Month", "Count", "Cost"])
@@ -196,7 +196,7 @@ class TestExcelLayoutSemantics(unittest.TestCase):
             row = month + 1
             pivot.append(
                 [
-                    datetime(2026, month, 1),
+                    datetime(2026, month, 1),  # noqa: DTZ001 - Excel stores timezone-naive dates.
                     f"=COUNTIF(Data!$A$2:$A$13,A{row})",
                     f"=SUMIF(Data!$A$2:$A$13,A{row},Data!$C$2:$C$13)",
                 ]

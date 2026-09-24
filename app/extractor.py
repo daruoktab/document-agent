@@ -430,7 +430,7 @@ class VisionExtractor:
         else:
             response = self.llm.invoke(messages)
             raw_content = str(response.content or "").strip()
-            metadata = response.response_metadata or {}
+            metadata = getattr(response, "response_metadata", None) or {}
             if (
                 not strip_thinking_process(raw_content).strip()
                 and metadata.get("finish_reason") == "length"

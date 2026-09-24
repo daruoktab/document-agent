@@ -16,6 +16,7 @@ from app.config import Settings
 from app.graph import DocumentExtractionPipeline
 from app.job_tracker import JobManager
 from app.streamlit_logic import (
+    _save_staged_uploaded_files,
     _save_uploaded_files,
     build_all_tables_csv_zip,
     build_sqlite_download,
@@ -47,7 +48,7 @@ class TestQCFixes(unittest.TestCase):
         for column, value in [('debit', 999999), ('description', 'Wrong'), ('txn_date', '2026-01-01')]:
             with self.subTest(column=column):
                 self.ingest()
-                with sqlite3.connect(self.db) as conn:
+                with closing(sqlite3.connect(self.db)) as conn, conn:
                     conn.execute(f'UPDATE transaction_details SET {column}=?', (value,))
                 self.assertEqual(cross_verify_dual_track(MD, self.db).guardrail_status, 'WARNING')
 
@@ -78,18 +79,18 @@ class TestQCFixes(unittest.TestCase):
         self.ingest(page=2)
         self.ingest(source='other.pdf')
         self.ingest(MD.replace('100', '200'))
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             rows = conn.execute('SELECT _source_doc, _page_number, debit FROM transaction_details ORDER BY 1,2').fetchall()
         self.assertEqual(rows, [('doc.pdf', 1, 200), ('doc.pdf', 2, 100), ('other.pdf', 1, 100)])
         self.ingest('No table')
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM transaction_details').fetchone()[0], 2)
 
     def test_page_replacement_rolls_back_on_failure(self):
         self.ingest()
         with patch.object(TabularDatabaseManager, 'ingest_relational_transactions', side_effect=RuntimeError('failure')), self.assertRaises(RuntimeError):
             self.ingest(MD.replace('100', '200'))
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             self.assertEqual(conn.execute('SELECT debit FROM transaction_details').fetchall(), [(100,)])
 
     def test_removed_pages_are_pruned_only_for_selected_document(self):
@@ -97,14 +98,14 @@ class TestQCFixes(unittest.TestCase):
         self.ingest(page=2)
         self.ingest(page=3, source='other.pdf')
         prune_document_pages(self.db, 'doc.pdf', 1)
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             self.assertEqual(conn.execute('SELECT _source_doc, _page_number FROM transaction_details ORDER BY 1,2').fetchall(), [('doc.pdf', 1), ('other.pdf', 3)])
 
     def test_generic_table_replacement(self):
         md = '| Produk | Warna |\n|---|---|\n| Kursi | Biru |'
         self.ingest(md, force_all_tables=True)
         self.ingest(md.replace('Biru', 'Merah'), force_all_tables=True)
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             self.assertEqual(conn.execute('SELECT warna FROM doc_t1').fetchall(), [('Merah',)])
 
     def test_upload_collisions_and_stable_reruns(self):
@@ -113,7 +114,9 @@ class TestQCFixes(unittest.TestCase):
         paths = _save_uploaded_files(cast(Any, uploads), self.root)
         self.assertEqual(len({p.stem for p in paths}), 3)
         self.assertEqual([p.read_bytes() for p in paths], [b'A', b'B', b'C'])
-        self.assertEqual(paths, _save_uploaded_files(cast(Any, uploads), self.root))
+        with patch('app.streamlit_logic.st.session_state', {}):
+            staged = _save_staged_uploaded_files(cast(Any, uploads), self.root)
+            self.assertEqual(staged, _save_staged_uploaded_files(cast(Any, uploads), self.root))
 
     def test_retry_starts_worker_and_preserves_options(self):
         source = self.root / 'image.png'
@@ -125,7 +128,7 @@ class TestQCFixes(unittest.TestCase):
             old.status = 'failed'
             new = manager.restart_job('image', self.root)
             self.assertEqual(start.call_count, 2)
-            self.assertEqual(new.status, 'running')
+            self.assertEqual(new.status, 'queued')
             self.assertEqual(new.extraction_options['dpi'], 250)
             self.assertTrue(new.extraction_options['force_all_tables'])
 
@@ -139,7 +142,7 @@ class TestQCFixes(unittest.TestCase):
         self.assertIn('A["Start"] --> B["End"]', result['markdown_content'])
 
     def test_csv_full_table_zip_and_sqlite_snapshot(self):
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('CREATE TABLE entries (label TEXT)')
             conn.executemany('INSERT INTO entries VALUES (?)', [(f'row_{i}',) for i in range(150)])
