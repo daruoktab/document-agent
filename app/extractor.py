@@ -260,6 +260,10 @@ class VisionExtractor:
         if not draft_markdown or not draft_markdown.strip():
             return draft_markdown
 
+        from .diagram import retain_flowchart_mermaid
+
+        draft_markdown = retain_flowchart_mermaid(draft_markdown)
+
         if isinstance(specs, str):
             active_specs = specs
         else:
@@ -345,6 +349,7 @@ class VisionExtractor:
 
             refined_md = strip_page_markers(refined_md)
             refined_md = collapse_consecutive_duplicate_blocks(refined_md)
+            refined_md = retain_flowchart_mermaid(refined_md)
 
             if not refined_md:
                 logger.warning("[Extractor:Judge] Hasil judge kosong. Menggunakan draft awal.")
@@ -457,6 +462,9 @@ class VisionExtractor:
 
         md_text = strip_page_markers(md_text)
         md_text = collapse_consecutive_duplicate_blocks(md_text)
+        from .diagram import retain_flowchart_mermaid
+
+        md_text = retain_flowchart_mermaid(md_text)
         if not md_text.strip():
             logger.error(
                 "[Extractor:Markdown] Respons LLM kosong setelah sanitasi untuk image=%s "

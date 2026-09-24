@@ -33,9 +33,10 @@ MARKDOWN_LINE_BREAK_RULES: str = """
 # --- System Prompt Utama -----------------------------------------------------
 MERMAID_EXTRACTION_RULES: str = '''
 ### Aturan Diagram Mermaid
-- Periksa gambar setiap halaman PDF/slide. Jika terlihat diagram alir, flowchart, swimlane, pohon keputusan, sequence, ERD, atau bagan relasi, WAJIB ekstrak menjadi blok kode ```mermaid tanpa menunggu permintaan tambahan.
-- Deskripsi blockquote saja TIDAK cukup untuk diagram tersebut. Pertahankan teks halaman dan caption, lalu tempatkan blok Mermaid di dekat caption diagram terkait.
-- Jika ada beberapa diagram dalam satu halaman, buat satu blok Mermaid terpisah untuk setiap diagram. Pertahankan node, arah panah, label cabang, dan kelompok/swimlane yang terlihat; jangan mengarang relasi.
+- Mermaid HANYA digunakan untuk keluarga flowchart: diagram alir proses, workflow, swimlane, dan pohon keputusan yang memiliki langkah serta panah yang terlihat jelas.
+- Sequence diagram, ERD, class diagram, state diagram, arsitektur blok, mindmap, Gantt, bagan organisasi, topologi jaringan, pinout, memory map, circuit, timing diagram, grafik, dashboard, peta, foto, logo, dan ilustrasi DILARANG diubah menjadi Mermaid. Jelaskan visual tersebut secara terstruktur dalam blockquote `> **[Diagram/Visual]:** ...`.
+- Jangan mengubah visual generik atau susunan kotak tanpa arah alur yang jelas menjadi flowchart buatan. Jika ragu, gunakan deskripsi terstruktur dan jangan mengarang node maupun relasi.
+- Untuk flowchart yang memenuhi kriteria, pertahankan teks halaman dan caption, lalu tempatkan satu blok Mermaid di dekat caption terkait. Jika ada beberapa flowchart, buat blok terpisah untuk masing-masing.
 - Untuk flowchart gunakan flowchart TD atau flowchart LR. Gunakan ID unik sederhana, label dalam tanda kutip ganda, dan <br/> untuk baris baru dalam label. Contoh sintaks (bukan konten untuk disalin):
 ```mermaid
 flowchart TD
@@ -43,8 +44,8 @@ flowchart TD
   B -->|Ya| C["Proses berikutnya"]
 ```
 - Untuk swimlane gunakan subgraph per peran; hubungkan node prosesnya, bukan ID subgraph ke dirinya sendiri.
-- Foto, logo, grafik statistik, peta, serta tabel simbol tanpa alur/relasi cukup diberi deskripsi atau tabel. Penyebutan kata flowchart dalam paragraf bukan bukti adanya diagram visual.
-- Saat menggabungkan atau mengoreksi Markdown, pertahankan seluruh blok Mermaid. Perbaiki sintaksnya jika perlu; jangan menggantinya dengan ringkasan/deskripsi teks.
+- Penyebutan kata flowchart dalam paragraf bukan bukti adanya flowchart visual.
+- Saat menggabungkan atau mengoreksi Markdown, pertahankan blok Mermaid flowchart yang valid. Blok Mermaid non-flowchart harus diganti dengan deskripsi terstruktur.
 '''.strip()
 
 SYSTEM_DOCUMENT_EXTRACTOR: str = """
@@ -69,7 +70,7 @@ Aturan wajib:
     - DILARANG menuliskan delimiter tabel `|---|` di dalam sel data baris. Gunakan '-' atau '—' untuk sel bernilai strip.
 11. Untuk chat, ekstrak sebagai transkrip percakapan yang urut.
 12. Untuk tanda tangan/paraf, ekstrak hanya informasi yang benar-benar terlihat; jangan menebak status approval jika tidak tertulis.
-13. Diagram alir/relasi yang terlihat WAJIB menjadi blok Mermaid sesuai aturan berikut. Visual yang tidak cocok untuk Mermaid dideskripsikan dalam blockquote: > **[Diagram/Visual]:** ...
+13. Hanya flowchart/alur proses yang terlihat jelas boleh menjadi blok Mermaid. Visual lainnya dideskripsikan dalam blockquote: > **[Diagram/Visual]:** ...
 """.strip() + "\n\n" + MARKDOWN_LINE_BREAK_RULES + "\n\n" + MERMAID_EXTRACTION_RULES
 
 # --- Modul Aturan Komposisional (Composable Rule Modules) --------------------
@@ -125,7 +126,7 @@ _RULE_PRESENTATION_SLIDES: str = """
 - Jangan menulis penanda komentar seperti <!-- SLIDE: 1 --> atau <!-- PAGE: 1 -->.
 - Jangan menebak nomor slide.
 - Tulis bullet points sesuai hierarki visual.
-- Jika ada diagram alir/relasi, buat blok Mermaid sesuai aturan diagram. Untuk foto atau visual non-relasional, tulis deskripsi dalam blockquote > **[Diagram/Visual]:** ...
+- Jika ada flowchart/alur proses, buat blok Mermaid sesuai aturan diagram. Semua visual selain keluarga flowchart ditulis sebagai deskripsi dalam blockquote > **[Diagram/Visual]:** ...
 - Jika ada tabel, ubah menjadi tabel Markdown.
 - Jangan mengulang konten slide yang sama.
 """.strip()

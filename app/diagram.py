@@ -3,7 +3,7 @@ Modul Spesialis Diagram & Visual Artifacts untuk Ekstraksi Vision VLM -> Mermaid
 
 Fitur:
   1. Klasifikasi kelayakan konversi diagram ke sintaks Mermaid.js.
-  2. Ekstraksi visual diagram ke kode Mermaid (flowchart, sequence, ERD, class, state, mindmap, block architecture, dsb).
+  2. Ekstraksi keluarga flowchart ke Mermaid; visual lain menjadi deskripsi terstruktur.
   3. Sanitasi dan validasi sintaks Mermaid.js.
   4. Fallback ke representasi deskriptif terstruktur jika diagram tidak cocok untuk Mermaid (grafik statistik kontinu, peta spasial, skematik sirkuit mikro, foto).
 """
@@ -44,6 +44,19 @@ MERMAID_KEYWORDS: tuple[str, ...] = (
     "c4context",
     "block-beta",
 )
+
+FLOWCHART_DIAGRAM_TYPES: frozenset[str] = frozenset({"flowchart"})
+
+
+def _normalize_policy_diagram_type(diagram_type: DiagramTypeLiteral | str) -> str:
+    """Normalize only explicit flowchart-family labels for policy decisions."""
+    normalized = str(diagram_type).strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in FLOWCHART_DIAGRAM_TYPES or any(
+        marker in normalized
+        for marker in ("flowchart", "workflow", "swimlane", "decision_tree", "alur_proses")
+    ):
+        return "flowchart"
+    return normalized
 
 
 def _sanitize_mermaid_line(line: str) -> str:
@@ -278,6 +291,35 @@ def sanitize_mermaid_code(raw_text: str) -> str | None:
     return cleaned
 
 
+def is_flowchart_mermaid(mermaid_code: str) -> bool:
+    """Return whether Mermaid code represents the allowed flowchart family."""
+    sanitized = sanitize_mermaid_code(mermaid_code)
+    if not sanitized:
+        return False
+    first_line = next(
+        (line.strip().lower() for line in sanitized.splitlines() if line.strip()),
+        "",
+    )
+    return first_line.startswith("flowchart ")
+
+
+def retain_flowchart_mermaid(markdown: str) -> str:
+    """Remove non-flowchart Mermaid blocks while preserving surrounding descriptions."""
+
+    def retain_allowed(match: re.Match[str]) -> str:
+        sanitized = sanitize_mermaid_code(match.group(1))
+        if sanitized and is_flowchart_mermaid(sanitized):
+            return f"```mermaid\n{sanitized}\n```"
+        return ""
+
+    return re.sub(
+        r"```mermaid\s*([\s\S]*?)\s*```",
+        retain_allowed,
+        markdown,
+        flags=re.IGNORECASE,
+    )
+
+
 def validate_mermaid_syntax(mermaid_code: str) -> tuple[bool, str | None]:
     """
     Validasi sintaks Mermaid komprehensif (Linter Compiler).
@@ -452,83 +494,19 @@ def get_diagram_recommendation(
     diagram_type: DiagramTypeLiteral | str,
 ) -> DiagramFormatRecommendation:
     """Berikan rekomendasi format ekstraksi berdasarkan kategori diagram."""
+    normalized_type = _normalize_policy_diagram_type(diagram_type)
     mermaid_compatible = {
         "flowchart": (
             "flowchart TD",
             "mermaid_code",
             "Cocok untuk alur kerja terstruktur",
         ),
-        "sequence_diagram": (
-            "sequenceDiagram",
-            "mermaid_code",
-            "Cocok untuk urutan pesan/proses",
-        ),
-        "class_diagram": (
-            "classDiagram",
-            "mermaid_code",
-            "Cocok untuk hierarki kelas OOP",
-        ),
-        "state_diagram": (
-            "stateDiagram-v2",
-            "mermaid_code",
-            "Cocok untuk transisi state finite",
-        ),
-        "er_diagram": (
-            "erDiagram",
-            "mermaid_code",
-            "Cocok untuk skema relasi entitas/database",
-        ),
-        "mindmap": (
-            "mindmap",
-            "mermaid_code",
-            "Cocok untuk hierarki konsep & taksonomi",
-        ),
-        "gantt_chart": (
-            "gantt",
-            "mermaid_code",
-            "Cocok untuk jadwal & lini masa proyek",
-        ),
-        "block_architecture": (
-            "block-beta",
-            "mermaid_code",
-            "Cocok untuk diagram blok arsitektur",
-        ),
-        "pin_diagram": (
-            "flowchart LR",
-            "mermaid_code",
-            "Diagram pinout/koneksi kaki IC",
-        ),
-        "memory_map": (
-            "flowchart TD",
-            "mermaid_code",
-            "Peta alokasi memori atau register map",
-        ),
-        "circuit_diagram": (
-            "flowchart LR",
-            "mermaid_code",
-            "Diagram sirkuit logika atau interkoneksi",
-        ),
-        "timing_diagram": (
-            "sequenceDiagram",
-            "mermaid_code",
-            "Diagram waktu sinyal/timing diagram",
-        ),
-        "git_graph": (
-            "gitGraph",
-            "mermaid_code",
-            "Cocok untuk visualisasi alur branching git",
-        ),
-        "generic_diagram": (
-            "flowchart LR",
-            "mermaid_code",
-            "Diagram umum, gunakan representasi flowchart",
-        ),
     }
 
-    if diagram_type in mermaid_compatible:
-        syntax, fmt, rationale = mermaid_compatible[diagram_type]
+    if normalized_type in mermaid_compatible:
+        syntax, fmt, rationale = mermaid_compatible[normalized_type]
         return DiagramFormatRecommendation(
-            diagram_type=diagram_type,
+            diagram_type=normalized_type,
             recommended_format=fmt,
             is_mermaid_compatible=True,
             suggested_syntax=syntax,
@@ -536,6 +514,19 @@ def get_diagram_recommendation(
         )
 
     unsuitable_reasons = {
+        "sequence_diagram": "Sequence diagram dijelaskan sebagai urutan aktor dan pesan agar arah interaksi tidak direka ulang.",
+        "class_diagram": "Class diagram dijelaskan secara terstruktur agar atribut dan relasi tidak dipaksakan ke representasi baru.",
+        "state_diagram": "State diagram dijelaskan sebagai daftar state dan transisi, bukan dibuat ulang otomatis.",
+        "er_diagram": "ERD dijelaskan sebagai entitas dan relasi agar kardinalitas visual tidak ditebak.",
+        "mindmap": "Mind map memerlukan tata letak hierarkis yang lebih aman dipertahankan sebagai deskripsi.",
+        "gantt_chart": "Gantt dan timeline dijelaskan secara kronologis agar posisi waktu tidak berubah.",
+        "block_architecture": "Arsitektur blok dijelaskan sebagai komponen dan koneksi tanpa memaksakan tata letak flowchart.",
+        "pin_diagram": "Pinout dijelaskan sebagai pemetaan pin dan fungsi.",
+        "memory_map": "Memory map dijelaskan sebagai rentang alamat dan fungsi.",
+        "circuit_diagram": "Diagram sirkuit memerlukan simbol dan koneksi presisi yang tidak diwakili Mermaid.",
+        "timing_diagram": "Timing diagram dijelaskan sebagai urutan perubahan sinyal dan waktunya.",
+        "git_graph": "Git graph dijelaskan sebagai urutan branch dan commit.",
+        "generic_diagram": "Visual generik tidak boleh diasumsikan sebagai flowchart tanpa bukti arah alur.",
         "unsuitable_statistical_chart": "Grafik statistik kontinu (bar, line, scatter) lebih baik diekstrak ke tabel data Markdown dan deskripsi tren.",
         "unsuitable_map_or_spatial": "Peta geografis atau spasial tidak dapat diwakili oleh simpul graf Mermaid.",
         "unsuitable_photo_or_illustration": "Foto atau ilustrasi artistik memerlukan deskripsi visual naratif.",
@@ -544,11 +535,11 @@ def get_diagram_recommendation(
     }
 
     rationale = unsuitable_reasons.get(
-        diagram_type,
+        normalized_type,
         "Format visual tidak kompatibel dengan generator kode diagram relasional.",
     )
     return DiagramFormatRecommendation(
-        diagram_type=diagram_type,
+        diagram_type=normalized_type,
         recommended_format="text_description",
         is_mermaid_compatible=False,
         suggested_syntax=None,
@@ -561,7 +552,7 @@ def classify_diagram_convertibility(
     llm: BaseChatModel,
 ) -> DiagramConvertibilityResult:
     """
-    Evaluasi visual: Apakah gambar mengandung diagram yang cocok dikonversi ke kode Mermaid?
+    Evaluasi visual: Apakah gambar mengandung keluarga flowchart yang cocok menjadi Mermaid?
     Mengembalikan `DiagramConvertibilityResult` berisi keputusan konvertibilitas dan format yang dianjurkan.
     """
     path_obj = Path(image_path).resolve()
@@ -571,18 +562,15 @@ def classify_diagram_convertibility(
     image_uri = image_data_uri(path_obj)
 
     prompt = (
-        "Analisis gambar ini dengan teliti untuk mengevaluasi apakah gambar ini berisi DIAGRAM yang cocok "
-        "dikonversi ke sintaks kode diagram relasional (Mermaid.js).\n\n"
-        "Kategori diagram yang SANGAT COCOK untuk Mermaid:\n"
-        "  - Flowchart / Alur Proses (flowchart TD/LR)\n"
-        "  - Sequence Diagram / Interaksi Pesan (sequenceDiagram)\n"
-        "  - Entity Relationship Diagram / ERD (erDiagram)\n"
-        "  - Class Diagram / OOP Hierarchy (classDiagram)\n"
-        "  - State Machine / State Diagram (stateDiagram-v2)\n"
-        "  - Mindmap / Pohon Konsep (mindmap)\n"
-        "  - Block Architecture / Blok Sistem Komponen (block-beta / flowchart)\n"
-        "  - Gantt Chart / Timeline (gantt)\n\n"
-        "Kategori yang TIDAK COCOK untuk Mermaid:\n"
+        "Analisis gambar ini dengan teliti untuk menentukan apakah visual tersebut benar-benar termasuk "
+        "keluarga FLOWCHART yang boleh dikonversi ke Mermaid.js.\n\n"
+        "Kategori yang BOLEH menjadi Mermaid:\n"
+        "  - Flowchart / alur proses / workflow dengan langkah dan panah yang jelas\n"
+        "  - Swimlane dengan alur proses lintas peran\n"
+        "  - Pohon keputusan dengan cabang kondisi yang jelas\n\n"
+        "Kategori yang WAJIB menjadi deskripsi, bukan Mermaid:\n"
+        "  - Sequence, ERD, class, state, mindmap, Gantt, org chart, dan arsitektur blok\n"
+        "  - Topologi jaringan, pinout, memory map, circuit, dan timing diagram\n"
         "  - Grafik statistik data kuantitatif / kurva / bar chart (unsuitable_statistical_chart)\n"
         "  - Peta spasial / denah / geografis (unsuitable_map_or_spatial)\n"
         "  - Foto / Gambar ilustrasi bebas (unsuitable_photo_or_illustration)\n"
@@ -593,7 +581,7 @@ def classify_diagram_convertibility(
         '  "is_convertible": true/false,\n'
         '  "diagram_type": "flowchart" | "sequence_diagram" | "class_diagram" | "state_diagram" | "er_diagram" | "mindmap" | "gantt_chart" | "block_architecture" | "unsuitable_statistical_chart" | "unsuitable_map_or_spatial" | "unsuitable_photo_or_illustration" | "unsuitable_complex_schematic" | "non_diagram",\n'
         '  "recommended_format": "mermaid" | "text_description" | "markdown_table",\n'
-        '  "mermaid_type": "flowchart" | "sequenceDiagram" | "erDiagram" | "classDiagram" | "stateDiagram-v2" | "mindmap" | "gantt" | "block-beta" | null,\n'
+        '  "mermaid_type": "flowchart" | null,\n'
         '  "confidence": 0.0 - 1.0,\n'
         '  "reasoning": "Alasan singkat dalam bahasa Indonesia",\n'
         '  "nodes_or_entities": ["Entitas1", "Entitas2", ...]\n'
@@ -624,16 +612,19 @@ def classify_diagram_convertibility(
             try:
                 data = json.loads(match.group(0))
                 dtype = data.get("diagram_type", "generic_diagram")
-                rec_fmt = data.get("recommended_format", "text_description")
-                is_conv = bool(data.get("is_convertible", False))
-                mtype = data.get("mermaid_type")
+                recommendation = get_diagram_recommendation(dtype)
+                dtype = recommendation.diagram_type
+                model_convertible = bool(data.get("is_convertible", False))
+                is_conv = model_convertible and recommendation.is_mermaid_compatible
+                rec_fmt = "mermaid" if is_conv else "text_description"
+                mtype = "flowchart" if is_conv else None
                 conf = float(data.get("confidence", 0.9))
                 reason = data.get("reasoning", "")
                 nodes = data.get("nodes_or_entities", [])
 
                 return DiagramConvertibilityResult(
                     is_convertible=is_conv,
-                    diagram_type=cast(DiagramTypeLiteral, dtype),
+                    diagram_type=dtype,
                     recommended_format=str(rec_fmt),
                     mermaid_type=mtype,
                     confidence=conf,
@@ -649,8 +640,10 @@ def classify_diagram_convertibility(
         lower_resp = text_resp.lower()
         if (
             "flowchart" in lower_resp
-            or "alur" in lower_resp
+            or "alur proses" in lower_resp
             or "workflow" in lower_resp
+            or "swimlane" in lower_resp
+            or "pohon keputusan" in lower_resp
         ):
             return DiagramConvertibilityResult(
                 is_convertible=True,
@@ -660,16 +653,6 @@ def classify_diagram_convertibility(
                 confidence=0.8,
                 reasoning="Terdeteksi pola alur proses/flowchart dari analisis teks model.",
             )
-        if "sequence" in lower_resp or "urutan" in lower_resp:
-            return DiagramConvertibilityResult(
-                is_convertible=True,
-                diagram_type="sequence_diagram",
-                recommended_format="mermaid",
-                mermaid_type="sequenceDiagram",
-                confidence=0.8,
-                reasoning="Terdeteksi urutan interaksi aktor/komponen.",
-            )
-
         return DiagramConvertibilityResult(
             is_convertible=False,
             diagram_type="generic_diagram",
@@ -710,50 +693,61 @@ def extract_diagram_to_mermaid(
 
     image_uri = image_data_uri(path_obj)
 
-    # 1. Evaluasi kelayakan jika tidak dipaksa
-    convertibility: DiagramConvertibilityResult | None = None
-    if not forced_diagram_type:
-        convertibility = classify_diagram_convertibility(path_obj, llm)
-        if not convertibility.is_convertible:
-            desc_prompt = (
-                "Gambar ini berisi elemen visual/grafik/diagram yang tidak cocok dijadikan diagram kode Mermaid. "
-                "Berikan deskripsi terstruktur mengenai gambar ini mencakup:\n"
-                "1. Judul / Tema Visual\n"
-                "2. Komponen / Data Utama yang digambarkan\n"
-                "3. Tren / Hubungan / Kesimpulan utama dari gambar\n"
-                "Sajikan dalam format Markdown bersih."
+    # 1. Evaluasi selalu dijalankan. Hint inspeksi tidak boleh melewati gerbang
+    # kebijakan karena label awal dapat berasal dari crop figure non-flowchart.
+    convertibility = classify_diagram_convertibility(path_obj, llm)
+    if not convertibility.is_convertible:
+        hint_context = (
+            f" Inspeksi awal memberi label '{forced_diagram_type}', tetapi label ini hanya petunjuk."
+            if forced_diagram_type
+            else ""
+        )
+        desc_prompt = (
+            "Gambar ini berisi elemen visual/grafik/diagram yang tidak boleh dijadikan Mermaid."
+            f"{hint_context} Berikan deskripsi faktual dan terstruktur mengenai gambar ini mencakup:\n"
+            "1. Judul / tema visual jika terlihat\n"
+            "2. Komponen atau data utama yang digambarkan\n"
+            "3. Hubungan, urutan, tren, atau kesimpulan yang benar-benar terlihat\n"
+            "Jangan mengarang relasi. Sajikan sebagai Markdown bersih tanpa blok Mermaid."
+        )
+        desc_resp = llm.invoke(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": desc_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": image_uri},
+                        },
+                    ],
+                }
+            ]
+        )
+        description = re.sub(
+            r"```mermaid\s*[\s\S]*?\s*```",
+            "",
+            str(desc_resp.content).strip(),
+            flags=re.IGNORECASE,
+        ).strip()
+        if not description:
+            description = (
+                convertibility.reasoning
+                or "Visual terdeteksi, tetapi tidak memenuhi kebijakan flowchart untuk Mermaid."
             )
-            desc_resp = llm.invoke(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": desc_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": image_uri},
-                            },
-                        ],
-                    }
-                ]
-            )
-            return DiagramExtractionResult(
-                status="unsuitable",
-                is_mermaid=False,
-                diagram_type=convertibility.diagram_type,
-                mermaid_code=None,
-                text_description=str(desc_resp.content).strip(),
-                text_summary=str(desc_resp.content).strip(),
-                reasoning=convertibility.reasoning,
-                convertibility=convertibility,
-            )
+        return DiagramExtractionResult(
+            status="unsuitable",
+            is_mermaid=False,
+            diagram_type=convertibility.diagram_type,
+            mermaid_code=None,
+            text_description=description,
+            text_summary=description,
+            reasoning=convertibility.reasoning,
+            convertibility=convertibility,
+        )
 
     # 2. Prompt Ekstraksi Mermaid.js
-    syntax_hint = ""
-    if forced_diagram_type:
-        syntax_hint = f"Paksa gunakan tipe diagram: {forced_diagram_type}."
-    elif convertibility and convertibility.mermaid_type:
-        syntax_hint = f"Gunakan tipe diagram Mermaid: {convertibility.mermaid_type}."
+    syntax_hint = "Gunakan tipe diagram Mermaid: flowchart TD atau flowchart LR."
 
     extract_prompt = (
         "Tugas Anda adalah mengekstrak seluruh elemen diagram, simpul (nodes), label teks, dan relasi berarah "
@@ -826,11 +820,13 @@ def extract_diagram_to_mermaid(
             else:
                 summary_text = text_resp
 
-        diag_type = cast(
-            DiagramTypeLiteral,
-            forced_diagram_type
-            or (convertibility.diagram_type if convertibility else "flowchart"),
-        )
+        if mermaid_block and not is_flowchart_mermaid(mermaid_block):
+            logger.warning(
+                "[Diagram:Extract] Model menghasilkan Mermaid non-flowchart; blok ditolak oleh kebijakan."
+            )
+            mermaid_block = None
+
+        diag_type = convertibility.diagram_type
 
         # Linter Compiler, CLI Rendering, & Multimodal Visual Self-Correction Loop
         MAX_MERMAID_RETRIES = 2
@@ -912,6 +908,8 @@ def extract_diagram_to_mermaid(
                     "chrome-headless-shell",
                     "could not find chrome",
                     "mmdc executable not found",
+                    "system cannot find the file specified",
+                    "winerror 2",
                 )
             )
             if not render_ok and render_err and not is_env_error:
@@ -1026,7 +1024,7 @@ def extract_diagram_to_mermaid(
                         )
                         if m_revised:
                             revised_code = sanitize_mermaid_code(m_revised.group(1))
-                            if revised_code:
+                            if revised_code and is_flowchart_mermaid(revised_code):
                                 rev_ok, rev_png, _ = render_mermaid_to_png(revised_code)
                                 if rev_ok and rev_png:
                                     mermaid_block = revised_code
@@ -1043,6 +1041,10 @@ def extract_diagram_to_mermaid(
             # Selesai dengan sukses
             break
 
+        if mermaid_block and not is_flowchart_mermaid(mermaid_block):
+            mermaid_block = None
+            rendered_png_bytes = None
+
         return DiagramExtractionResult(
             status="success" if mermaid_block else "unsuitable",
             is_mermaid=bool(mermaid_block),
@@ -1051,9 +1053,7 @@ def extract_diagram_to_mermaid(
             rendered_image_bytes=rendered_png_bytes,
             text_summary=summary_text
             or f"Diagram tipe {diag_type} berhasil diekstrak.",
-            reasoning=convertibility.reasoning
-            if convertibility
-            else "Ekstraksi visual berhasil dijalankan.",
+            reasoning=convertibility.reasoning,
             convertibility=convertibility,
         )
 
@@ -1076,11 +1076,14 @@ def extract_diagram_to_mermaid(
 
 
 __all__ = [
+    "FLOWCHART_DIAGRAM_TYPES",
     "MERMAID_KEYWORDS",
     "classify_diagram_convertibility",
     "extract_diagram_to_mermaid",
     "get_diagram_recommendation",
+    "is_flowchart_mermaid",
     "render_mermaid_to_png",
+    "retain_flowchart_mermaid",
     "sanitize_mermaid_code",
     "validate_mermaid_syntax",
 ]

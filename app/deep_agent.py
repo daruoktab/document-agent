@@ -127,7 +127,7 @@ def build_deep_agent(
 
     @tool
     def classify_diagram_suitability(image_path: str) -> str:
-        """Evaluasi kelayakan diagram visual pada dokumen: apakah cocok dikonversi menjadi kode Mermaid yang valid (flowchart, sequence, ERD, state, class, mindmap, block architecture) atau tidak cocok (grafik statistik kontinu, peta, foto, skematik sirkuit mikro)."""
+        """Evaluasi apakah visual merupakan keluarga flowchart yang boleh menjadi Mermaid."""
         proc = preprocess_image(image_path)
         res = classify_diagram_convertibility(proc.processed_path, llm=vlm)
         payload = res.model_dump()
@@ -141,7 +141,7 @@ def build_deep_agent(
         image_path: str,
         diagram_hint: str | None = None,
     ) -> str:
-        """Ekstrak diagram visual pada dokumen menjadi kode Mermaid.js yang valid dan terstruktur, atau berikan deskripsi terstruktur jika diagram tidak cocok untuk Mermaid."""
+        """Ekstrak flowchart menjadi Mermaid atau deskripsikan visual selain flowchart."""
         proc = preprocess_image(image_path)
         res = run_extract_diagram(
             proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint
@@ -347,9 +347,9 @@ def build_deep_agent(
             description="Sub-agent untuk mengevaluasi kelayakan diagram dan mengekstraknya menjadi kode Mermaid.js atau deskripsi.",
             system_prompt=(
                 "Anda adalah Sub-Agent Spesialis Diagram & Visual Artifacts. "
-                "Tugas Anda: Evaluasi selektif citra diagram (flowchart, sequence, ERD, mindmap, block architecture, class diagram) "
-                "dan konversi ke blok kode Mermaid.js yang valid (```mermaid) menggunakan tool 'extract_diagram_to_mermaid'. "
-                "Jika diagram tidak cocok untuk Mermaid (grafik statistik kontinu, peta spasial, foto, skematik mikro), berikan deskripsi terstruktur."
+                "Tugas Anda: Konversi hanya flowchart, workflow, swimlane, dan decision tree yang jelas "
+                "ke blok Mermaid.js menggunakan tool 'extract_diagram_to_mermaid'. "
+                "Sequence, ERD, class/state, arsitektur, mindmap, grafik, peta, foto, dan visual lain wajib menjadi deskripsi terstruktur."
             ),
             tools=[classify_diagram_suitability, extract_diagram_to_mermaid],
         ),
@@ -421,7 +421,7 @@ def build_deep_agent(
         "Anda mengorkestrasi 8 Sub-Agent spesialis:\n"
         "  - 'layout-classifier'         : Menentukan tipe dokumen & karakteristik komposit.\n"
         "  - 'ocr-markdown-extractor'    : Mengonversi halaman menjadi draft Markdown via OCR primer.\n"
-        "  - 'diagram-mermaid-specialist': Menangani diagram alur/relasi/topologi visual menjadi sintaks Mermaid.js.\n"
+        "  - 'diagram-mermaid-specialist': Membuat Mermaid untuk flowchart dan deskripsi untuk visual lainnya.\n"
         "  - 'presentation-specialist'   : Menangani slide PPT/PPTX visual.\n"
         "  - 'pdf-orchestrator'          : Mengelola multi-halaman PDF dengan heading continuity.\n"
         "  - 'docx-orchestrator'         : Mengelola multi-halaman DOCX/DOC lewat render visual per halaman.\n"

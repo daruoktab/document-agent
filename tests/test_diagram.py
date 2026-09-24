@@ -18,6 +18,7 @@ from app.diagram import (
     extract_diagram_to_mermaid,
     get_diagram_recommendation,
     render_mermaid_to_png,
+    retain_flowchart_mermaid,
     sanitize_mermaid_code,
     validate_mermaid_syntax,
 )
@@ -159,8 +160,13 @@ def test_get_diagram_recommendation():
     assert rec_flow.recommended_format == "mermaid_code"
     assert rec_flow.suggested_syntax == "flowchart TD"
 
+    for flowchart_alias in ("workflow", "swimlane", "decision_tree", "alur proses"):
+        alias_recommendation = get_diagram_recommendation(flowchart_alias)
+        assert alias_recommendation.diagram_type == "flowchart"
+        assert alias_recommendation.is_mermaid_compatible is True
+
     rec_pin = get_diagram_recommendation("pin_diagram")
-    assert rec_pin.is_mermaid_compatible is True
+    assert rec_pin.is_mermaid_compatible is False
     assert rec_pin.diagram_type == "pin_diagram"
 
     # Verifikasi fleksibilitas Pydantic coercion terhadap variasi model (mis. 'pinout', 'memory map')
@@ -178,6 +184,24 @@ def test_get_diagram_recommendation():
     rec_unsuitable = get_diagram_recommendation("unsuitable_statistical_chart")
     assert rec_unsuitable.is_mermaid_compatible is False
     assert rec_unsuitable.recommended_format == "text_description"
+
+    for diagram_type in (
+        "sequence_diagram",
+        "class_diagram",
+        "state_diagram",
+        "er_diagram",
+        "mindmap",
+        "gantt_chart",
+        "block_architecture",
+        "memory_map",
+        "circuit_diagram",
+        "timing_diagram",
+        "git_graph",
+        "generic_diagram",
+    ):
+        recommendation = get_diagram_recommendation(diagram_type)
+        assert recommendation.is_mermaid_compatible is False
+        assert recommendation.recommended_format == "text_description"
 
 
 def test_classify_diagram_convertibility(tmp_path):
@@ -207,7 +231,7 @@ def test_classify_diagram_convertibility(tmp_path):
     assert "User" in res.nodes_or_entities
 
 
-def test_extract_diagram_to_mermaid_success(tmp_path):
+def test_sequence_diagram_is_described_instead_of_converted(tmp_path):
     img_file = tmp_path / "seq_test.png"
     _create_dummy_image(img_file)
 
@@ -227,32 +251,70 @@ def test_extract_diagram_to_mermaid_success(tmp_path):
     }
     """
 
-    # Step 2: Extract
-    resp_extract = MagicMock()
-    resp_extract.content = """
-    Berikut adalah kode Mermaid:
-    ```mermaid
-    sequenceDiagram
-        autonumber
-        Client->>Server: POST /login
-        Server->>DB: Query User
-        DB-->>Server: User Data
-        Server-->>Client: JWT Access Token
-    ```
-    Alur autentikasi token JWT dari client ke database.
-    """
+    resp_description = MagicMock()
+    resp_description.content = (
+        "Urutan autentikasi memperlihatkan Client mengirim permintaan ke Server, "
+        "Server membaca data pengguna dari DB, lalu mengembalikan token."
+    )
 
-    mock_llm.invoke.side_effect = [resp_classify, resp_extract]
+    mock_llm.invoke.side_effect = [resp_classify, resp_description]
 
-    res = extract_diagram_to_mermaid(img_file, mock_llm)
+    res = extract_diagram_to_mermaid(
+        img_file,
+        mock_llm,
+        forced_diagram_type="flowchart",
+    )
     assert isinstance(res, DiagramExtractionResult)
-    assert res.status == "success"
-    assert res.is_mermaid is True
+    assert res.status == "unsuitable"
+    assert res.is_mermaid is False
     assert res.diagram_type == "sequence_diagram"
-    assert res.mermaid_code is not None
-    assert "sequenceDiagram" in res.mermaid_code
-    assert "JWT Access Token" in res.mermaid_code
-    assert res.text_summary is not None and "Alur autentikasi token JWT" in res.text_summary
+    assert res.mermaid_code is None
+    assert res.text_description is not None
+    assert "Client" in res.text_description
+    assert "Server" in res.text_description
+
+
+def test_classifier_enforces_flowchart_only_policy(tmp_path):
+    img_file = _create_dummy_image(tmp_path / "forced_sequence.png")
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value.content = json.dumps(
+        {
+            "is_convertible": True,
+            "diagram_type": "sequence_diagram",
+            "recommended_format": "mermaid",
+            "mermaid_type": "sequenceDiagram",
+            "confidence": 0.99,
+            "reasoning": "Urutan pesan eksplisit",
+        }
+    )
+
+    result = classify_diagram_convertibility(img_file, mock_llm)
+
+    assert result.is_convertible is False
+    assert result.recommended_format == "text_description"
+    assert result.mermaid_type is None
+
+
+def test_retain_flowchart_mermaid_removes_other_mermaid_types():
+    markdown = """# Visual
+```mermaid
+sequenceDiagram
+  User->>API: Request
+```
+
+> **[Diagram/Visual]:** Urutan permintaan pengguna.
+
+```mermaid
+flowchart TD
+  A[\"Mulai\"] --> B[\"Selesai\"]
+```
+"""
+
+    cleaned = retain_flowchart_mermaid(markdown)
+
+    assert "sequenceDiagram" not in cleaned
+    assert "Urutan permintaan pengguna" in cleaned
+    assert "flowchart TD" in cleaned
 
 
 def test_missing_renderer_preserves_mermaid_without_retry(tmp_path):
@@ -265,7 +327,7 @@ def test_missing_renderer_preserves_mermaid_without_retry(tmp_path):
     assert result.is_mermaid
     assert result.mermaid_code is not None
     assert 'A["Start"] --> B["End"]' in result.mermaid_code
-    assert mock_llm.invoke.call_count == 1
+    assert mock_llm.invoke.call_count == 2
 
 
 def test_extract_diagram_unsuitable_fallback(tmp_path):
@@ -349,7 +411,15 @@ def test_render_mermaid_to_png_success(tmp_path: Path):
     """
     out_file = tmp_path / "diagram_test.png"
     ok, png_bytes, err = render_mermaid_to_png(valid_mermaid, output_path=out_file)
-    if not ok and err and any(m in err.lower() for m in ("chrome-headless-shell", "tidak terinstal")):
+    if not ok and err and any(
+        marker in err.lower()
+        for marker in (
+            "chrome-headless-shell",
+            "tidak terinstal",
+            "system cannot find the file specified",
+            "winerror 2",
+        )
+    ):
         return
     assert ok is True
     assert err is None
