@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import re
 import sqlite3
@@ -26,6 +27,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Protocol
+from urllib.parse import urlencode
 from zipfile import ZIP_DEFLATED, ZipFile
 
 # Pastikan root direktori proyek berada di sys.path agar impor 'from app....' selalu dikenali
@@ -105,15 +107,98 @@ def _load_brand_assets() -> tuple[str, str]:
     return background, logo
 
 
-def _sync_workspace_page() -> None:
-    """Sinkronkan pilihan navigasi dengan halaman workspace aktif."""
-    st.session_state["workspace_page"] = st.session_state["workspace_nav"]
-
-
 def _set_workspace_page(page: str) -> None:
     """Arahkan pengguna ke halaman workspace yang diminta."""
     if page in WORKSPACE_PAGES:
         st.session_state["workspace_page"] = page
+        st.session_state["scroll_to_top_after_navigation"] = True
+
+
+def _restore_workspace_from_url(
+    all_docs: Sequence[dict[str, Any]], batches: Sequence[dict[str, Any]]
+) -> None:
+    """Pulihkan pilihan navigasi saat Streamlit membuat sesi baru."""
+    valid_batch_ids = {batch["id"] for batch in batches}
+    valid_stems = {document["stem"] for document in all_docs}
+    valid_stems.update(
+        document["stem"] for batch in batches for document in batch["documents"]
+    )
+    page = st.query_params.get("view", "Dashboard")
+    batch_id = st.query_params.get("batch")
+    stem = st.query_params.get("file")
+    st.session_state.setdefault(
+        "workspace_page", page if page in WORKSPACE_PAGES else "Dashboard"
+    )
+    st.session_state.setdefault(
+        "selected_batch_id", batch_id if batch_id in valid_batch_ids else None
+    )
+    st.session_state.setdefault(
+        "selected_stem", stem if stem in valid_stems else None
+    )
+
+
+def _sync_workspace_url() -> None:
+    """Simpan lokasi batch/file pada URL agar tetap tersedia setelah restart."""
+    values = {
+        "view": st.session_state["workspace_page"],
+        "batch": st.session_state.get("selected_batch_id"),
+        "file": st.session_state.get("selected_stem"),
+    }
+    for key, value in values.items():
+        if value is None:
+            if key in st.query_params:
+                del st.query_params[key]
+        elif st.query_params.get(key) != value:
+            st.query_params[key] = value
+
+
+def _workspace_navigation_html() -> str:
+    """Use browser links so navigation also works after a stale WebSocket session."""
+    current = st.session_state["workspace_page"]
+    labels = {
+        "Dashboard": "🏠  Dashboard",
+        "Upload": "📤  Upload",
+        "Histori": "🗂️  Histori",
+        "Dokumen": "📄  Dokumen aktif",
+    }
+    links = []
+    for page in WORKSPACE_PAGES:
+        params = {"view": page}
+        if page == "Dokumen" and st.session_state.get("selected_stem"):
+            params["file"] = st.session_state["selected_stem"]
+        href = "?" + urlencode(params)
+        active = ' aria-current="page"' if page == current else ""
+        links.append(
+            f'<a href="{html.escape(href, quote=True)}" target="_self"{active}>'
+            f'{html.escape(labels[page])}</a>'
+        )
+    return '<nav class="workspace-navigation" aria-label="Navigasi workspace">' + "".join(links) + "</nav>"
+
+
+def _workspace_open_link(page: str, label: str, **selection: str | None) -> str:
+    """Build a same-tab link for opening a batch or document from the dashboard."""
+    params = {"view": page, **{key: value for key, value in selection.items() if value}}
+    href = html.escape("?" + urlencode(params), quote=True)
+    return f'<a class="workspace-open-link" href="{href}">{html.escape(label)}</a>'
+
+
+def _reset_main_scroll_after_navigation() -> None:
+    """Pastikan halaman tujuan terlihat meski browser menyimpan scroll halaman lama."""
+    if not st.session_state.pop("scroll_to_top_after_navigation", False):
+        return
+    st.components.v1.html(
+        """
+        <script>
+          const main = window.parent.document.querySelector('[data-testid="stMain"]');
+          if (main) {
+            const reset = () => main.scrollTo({top: 0, behavior: 'instant'});
+            requestAnimationFrame(reset);
+            setTimeout(reset, 150);
+          }
+        </script>
+        """,
+        height=0,
+    )
 
 
 def render_workspace_styles() -> None:
@@ -145,18 +230,31 @@ def render_workspace_styles() -> None:
               var(--background-color) 36rem);
             border-right: 1px solid var(--gawey-outline);
           }
-          [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label {
+          .workspace-navigation a {
+            display: block;
             border-radius: 0.7rem;
-            padding: 0.22rem 0.5rem;
+            padding: 0.55rem 0.7rem;
+            color: var(--text-color);
+            text-decoration: none;
             transition: background-color 120ms ease;
           }
-          [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label:hover {
+          .workspace-navigation a:hover {
             background: var(--gawey-panel);
           }
-          [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) {
+          .workspace-navigation a[aria-current="page"] {
             background: color-mix(in srgb, var(--secondary-background-color) 68%, var(--gawey-blue) 32%);
             box-shadow: inset 3px 0 var(--gawey-turquoise);
           }
+          .workspace-open-link {
+            display: inline-block;
+            padding: 0.45rem 0.8rem;
+            border: 1px solid var(--gawey-outline);
+            border-radius: 0.7rem;
+            color: var(--text-color);
+            text-decoration: none;
+            font-weight: 600;
+          }
+          .workspace-open-link:hover { background: var(--gawey-panel); }
           [data-testid="stSidebar"] hr {
             border-color: var(--gawey-outline);
           }
@@ -333,6 +431,20 @@ def render_history_workspace(
     output_dir: Path,
 ) -> None:
     """Tampilkan pencarian dokumen dan navigasi batch dari satu halaman."""
+    selected_batch = next(
+        (batch for batch in batches if batch["id"] == st.session_state.get("selected_batch_id")),
+        None,
+    )
+    if selected_batch:
+        if st.button("← Kembali ke daftar histori", key="history_back_to_list"):
+            st.session_state["selected_batch_id"] = None
+            st.session_state["scroll_to_top_after_navigation"] = True
+            st.rerun()
+        render_batch_summary(selected_batch, output_dir)
+        render_batch_monitor(selected_batch, output_dir)
+        render_batch_download(selected_batch, output_dir)
+        return
+
     st.subheader("Histori dokumen dan batch")
     st.caption("Cari pekerjaan, lihat statusnya, lalu buka hasil atau monitor batch.")
 
@@ -386,6 +498,7 @@ def render_history_workspace(
             st.session_state["selected_stem"] = selected
             st.session_state["selected_batch_id"] = None
             st.session_state["workspace_page"] = "Dokumen"
+            st.session_state["scroll_to_top_after_navigation"] = True
             st.rerun()
     elif all_docs:
         st.info("Tidak ada dokumen yang cocok dengan pencarian dan filter status.")
@@ -446,6 +559,7 @@ def render_history_workspace(
                                 if batch.get("documents")
                                 else None
                             )
+                            st.session_state["scroll_to_top_after_navigation"] = True
                             st.rerun()
                     with delete_col:
                         if st.button(
@@ -454,18 +568,6 @@ def render_history_workspace(
                             use_container_width=True,
                         ):
                             _confirm_delete_batch(batch, output_dir)
-
-    selected_batch_id = st.session_state.get("selected_batch_id")
-    selected_batch = next(
-        (batch for batch in batches if batch["id"] == selected_batch_id), None
-    )
-    if selected_batch:
-        st.markdown("---")
-        st.markdown("### Rincian batch terpilih")
-        render_batch_download(selected_batch, output_dir)
-        render_batch_monitor(
-            [doc["stem"] for doc in selected_batch["documents"]], output_dir
-        )
 
 
 def render_upload_workspace(
@@ -608,6 +710,14 @@ def render_document_workspace(stem: str | None, output_dir: Path) -> None:
             )
         return
 
+    if st.session_state.get("selected_batch_id") and st.button(
+        "← Kembali ke batch",
+        key=f"back_to_batch_{stem}",
+    ):
+        st.session_state["workspace_page"] = "Histori"
+        st.session_state["scroll_to_top_after_navigation"] = True
+        st.rerun()
+
     job_manager = JobManager.get_instance()
     job = job_manager.get_job(stem, output_dir=output_dir)
     if job is not None and job.status in {"queued", "running", "paused"}:
@@ -739,7 +849,6 @@ def batch_status(jobs: Sequence[Any]) -> str:
     return "Selesai"
 
 
-@st.fragment(run_every=2)
 def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -> None:
     """Dashboard utama untuk memantau semua batch upload secara bersamaan."""
     manager = JobManager.get_instance()
@@ -862,7 +971,7 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
     active_rows = [row for row in batch_rows if row["Status"] == "Diproses"]
     history_rows = [row for row in batch_rows if row["Status"] != "Diproses"]
 
-    def render_batch_table(rows: list[dict[str, Any]], key_prefix: str) -> None:
+    def render_batch_table(rows: list[dict[str, Any]]) -> None:
         with st.container(height=420 if len(rows) > 6 else "content", border=False):
             header = st.columns([2.2, 1.1, 1.1, 2.2, 1, 2.2, 1.7, 0.8])
             for column, label in zip(
@@ -880,7 +989,7 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
                 strict=True,
             ):
                 column.markdown(f"**{label}**")
-            for index, row in enumerate(rows):
+            for row in rows:
                 columns = st.columns([2.2, 1.1, 1.1, 2.2, 1, 2.2, 1.7, 0.8])
                 values = [
                     row["Batch"],
@@ -893,15 +1002,15 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
                 ]
                 for column, value in zip(columns[:-1], values, strict=True):
                     column.write(value)
-                if columns[-1].button("Buka", key=f"{key_prefix}_{index}"):
-                    st.session_state["selected_batch_id"] = row["_batch_id"]
-                    st.session_state["selected_stem"] = row["_first_stem"]
-                    st.session_state["workspace_page"] = "Histori"
-                    st.rerun()
+                columns[-1].html(
+                    _workspace_open_link(
+                        "Histori", "Buka", batch=row["_batch_id"], file=row["_first_stem"]
+                    )
+                )
 
     if active_rows:
         st.markdown("#### 🔄 Batch yang sedang diproses")
-        render_batch_table(active_rows, "dashboard_active_batch")
+        render_batch_table(active_rows)
         current = next(
             (job for job in active_jobs if job.status == "running"), active_jobs[0]
         )
@@ -915,7 +1024,7 @@ def render_main_dashboard(output_dir: Path, batches: Sequence[dict[str, Any]]) -
 
     if history_rows:
         with st.expander("Tampilkan histori batch", expanded=False):
-            render_batch_table(history_rows, "dashboard_history_batch")
+            render_batch_table(history_rows)
 
 
 # ==============================================================================
@@ -1267,14 +1376,15 @@ def _confirm_delete_batch_file(
             st.rerun()
 
 
-def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
+def render_batch_summary(batch: dict[str, Any], output_dir: Path) -> None:
+    """Show the batch identity and counts before its scrollable document list."""
+    st.subheader("Rincian batch terpilih")
     st.subheader(batch["name"])
     manager = JobManager.get_instance()
     jobs = [
         manager.get_job(doc["stem"], output_dir=output_dir)
         for doc in batch["documents"]
     ]
-    busy = any(job and job.status in {"queued", "running", "paused"} for job in jobs)
     completed = sum(bool(job and job.status == "completed") for job in jobs)
     status = batch_status(jobs)
     st.caption(
@@ -1290,20 +1400,22 @@ def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
         "Gagal",
         sum(bool(job and job.status in {"failed", "canceled"}) for job in jobs),
     )
+
+
+def render_batch_download(batch: dict[str, Any], output_dir: Path) -> None:
+    manager = JobManager.get_instance()
+    jobs = [
+        manager.get_job(doc["stem"], output_dir=output_dir)
+        for doc in batch["documents"]
+    ]
+    busy = any(job and job.status in {"queued", "running", "paused"} for job in jobs)
+    completed = sum(bool(job and job.status == "completed") for job in jobs)
     action_col = st.columns([1, 1, 4])
     with action_col[0]:
         if st.button("🗑️ Hapus batch", key=f"delete_batch_{batch['id']}", use_container_width=True):
             _confirm_delete_batch(batch, output_dir)
     with action_col[1]:
         st.caption("Penghapusan memerlukan konfirmasi")
-    st.markdown("#### File dalam batch")
-    for document in batch.get("documents", []):
-        file_col, delete_col = st.columns([6, 1])
-        with file_col:
-            st.write(document.get("source_name", document["stem"]))
-        with delete_col:
-            if st.button("Hapus", key=f"delete_file_{batch['id']}_{document['stem']}", use_container_width=True):
-                _confirm_delete_batch_file(batch, document, output_dir)
     resumable_jobs = [
         job
         for job in jobs
@@ -1472,11 +1584,10 @@ def render_mermaid_html(mermaid_code: str, height: int = 420) -> None:
 # ==============================================================================
 
 
-@st.fragment(run_every=2)
-def render_batch_monitor(stems: list[str], output_path: Path) -> None:
-    """Tampilkan semua hasil upload batch agar dokumen selain yang aktif tetap terlihat."""
+def render_batch_monitor(batch: dict[str, Any], output_path: Path) -> None:
+    """Show each batch document once, including its status and available actions."""
     job_manager = JobManager.get_instance()
-    st.subheader("Dokumen dalam batch upload")
+    st.markdown("#### Dokumen dalam batch")
     labels = {
         "queued": "Menunggu antrean",
         "running": "Sedang diproses",
@@ -1487,13 +1598,15 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
     }
     rows = []
     jobs = []
-    for stem in dict.fromkeys(stems):
+    documents = list({doc["stem"]: doc for doc in batch["documents"]}.values())
+    for document in documents:
+        stem = document["stem"]
         job = job_manager.get_job(stem, output_dir=output_path)
         jobs.append(job)
         if job:
             rows.append(
                 {
-                    "File": job.file_name,
+                    "File": document.get("source_name", job.file_name),
                     "Status": labels.get(job.status, job.status),
                     "Progres": f"{job.progress_percentage():.0f}%",
                     "Tahap": job.stage,
@@ -1505,7 +1618,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
         else:
             rows.append(
                 {
-                    "File": stem,
+                    "File": document.get("source_name", stem),
                     "Status": "Belum tersedia",
                     "Progres": "—",
                     "Tahap": "Belum tersedia",
@@ -1516,7 +1629,7 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
             )
     if rows:
         with st.container(height=420, border=True):
-            header = st.columns([2.2, 1.2, 0.8, 1.8, 1.2, 1.4, 1.4, 1.4])
+            header = st.columns([2.2, 1.2, 0.8, 1.8, 1.2, 1.4, 1.4, 1.4, 1])
             headers = [
                 "File",
                 "Status",
@@ -1526,13 +1639,15 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
                 "Update terakhir",
                 "Selesai",
                 "Aksi",
+                "Hapus",
             ]
             for column, label in zip(header, headers, strict=True):
                 column.markdown(f"**{label}**")
-            for index, (stem, row) in enumerate(
-                zip(dict.fromkeys(stems), rows, strict=True)
+            for index, (document, row) in enumerate(
+                zip(documents, rows, strict=True)
             ):
-                columns = st.columns([2.2, 1.2, 0.8, 1.8, 1.2, 1.4, 1.4, 1.4])
+                stem = document["stem"]
+                columns = st.columns([2.2, 1.2, 0.8, 1.8, 1.2, 1.4, 1.4, 1.4, 1])
                 values = [
                     row["File"],
                     row["Status"],
@@ -1542,16 +1657,23 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
                     row["Update terakhir"],
                     row["Selesai"],
                 ]
-                for column, value in zip(columns[:-1], values, strict=True):
+                for column, value in zip(columns[:-2], values, strict=True):
                     column.write(value)
 
-                action_col = columns[-1]
+                action_col = columns[-2]
+                if columns[-1].button(
+                    "Hapus",
+                    key=f"delete_file_{batch['id']}_{stem}",
+                    use_container_width=True,
+                ):
+                    _confirm_delete_batch_file(batch, document, output_path)
                 job_item = jobs[index]
                 if job_item and job_item.status in {"running", "paused", "queued"}:
                     b_open, b_act = action_col.columns([1, 1])
-                    if b_open.button("Buka", key=f"batch_open_{index}", use_container_width=True):
+                    if b_open.button("Buka", key=f"batch_open_{stem}", use_container_width=True):
                         st.session_state["selected_stem"] = stem
                         st.session_state["workspace_page"] = "Dokumen"
+                        st.session_state["scroll_to_top_after_navigation"] = True
                         st.rerun()
                     act_triggered = False
                     if job_item.status == "running":
@@ -1587,9 +1709,10 @@ def render_batch_monitor(stems: list[str], output_path: Path) -> None:
                     if act_triggered:
                         st.rerun()
                 else:
-                    if action_col.button("Buka", key=f"batch_open_{index}", use_container_width=True):
+                    if action_col.button("Buka", key=f"batch_open_{stem}", use_container_width=True):
                         st.session_state["selected_stem"] = stem
                         st.session_state["workspace_page"] = "Dokumen"
+                        st.session_state["scroll_to_top_after_navigation"] = True
                         st.rerun()
     st.caption(
         "Setiap file memiliki hasil Markdown sendiri. Pilih Buka untuk melihat hasil, "
@@ -1778,14 +1901,27 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
         badge_pages = f"{len(images)} halaman/slide" if images else "Hasil teks"
         st.caption(f"Selesai diproses · {badge_pages} · File hasil: `{md_file.name}`")
     with col_top2:
-        zip_data = build_document_zip(stem, output_path)
-        st.download_button(
-            "⬇️ Unduh semua hasil (.zip)",
-            data=zip_data,
-            file_name=f"{stem}_hasil.zip",
-            mime="application/zip",
-            use_container_width=True,
+        zip_identity = (
+            str((output_path / stem).resolve()),
+            md_file.stat().st_mtime_ns if md_file.exists() else None,
+            db_file.stat().st_mtime_ns if db_file and db_file.exists() else None,
         )
+        prepared_zip = st.session_state.get("prepared_document_zip")
+        if prepared_zip and prepared_zip[0] != zip_identity:
+            st.session_state.pop("prepared_document_zip", None)
+            prepared_zip = None
+        if st.button("Siapkan ZIP hasil", key=f"prepare_document_{stem}", use_container_width=True):
+            with st.spinner("Mengemas hasil dokumen..."):
+                prepared_zip = (zip_identity, build_document_zip(stem, output_path))
+                st.session_state["prepared_document_zip"] = prepared_zip
+        if prepared_zip:
+            st.download_button(
+                "⬇️ Unduh semua hasil (.zip)",
+                data=prepared_zip[1],
+                file_name=f"{stem}_hasil.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
         if st.button("🔄 Ekstrak Ulang Dokumen Ini", use_container_width=True):
             job_manager.restart_job(stem, output_dir=output_path)
             st.rerun()
@@ -1978,21 +2114,23 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
             doc_mermaids = extract_mermaid_blocks(md_content)
             if doc_mermaids:
                 st.markdown(f"### 🎨 Diagram yang ditemukan ({len(doc_mermaids)})")
-                for idx, m_code in enumerate(doc_mermaids, 1):
-                    with st.expander(
-                        f"📊 Diagram {idx}",
-                        expanded=True,
-                    ):
-                        render_mermaid_html(m_code, height=380)
-                        with st.expander("Lihat kode diagram"):
-                            st.code(m_code, language="mermaid")
-                        st.download_button(
-                            f"⬇️ Unduh Kode Diagram #{idx} (.mmd)",
-                            data=m_code,
-                            file_name=f"{stem}_diagram_{idx}.mmd",
-                            mime="text/plain",
-                            key=f"dl_mmd_{idx}",
-                        )
+                diagram_number = st.selectbox(
+                    "Pilih diagram",
+                    range(1, len(doc_mermaids) + 1),
+                    key=f"document_diagram_{stem}",
+                )
+                m_code = doc_mermaids[diagram_number - 1]
+                if st.checkbox("Tampilkan diagram terpilih", key=f"show_diagram_{stem}"):
+                    render_mermaid_html(m_code, height=380)
+                with st.expander("Lihat kode diagram"):
+                    st.code(m_code, language="mermaid")
+                st.download_button(
+                    "⬇️ Unduh kode diagram terpilih (.mmd)",
+                    data=m_code,
+                    file_name=f"{stem}_diagram_{diagram_number}.mmd",
+                    mime="text/plain",
+                    key=f"dl_mmd_{stem}",
+                )
 
             st.markdown("### 📄 Isi Teks Markdown")
             st.markdown(md_content)
@@ -2228,16 +2366,12 @@ def main() -> None:
     output_dir = PROJECT_ROOT / "output"
     job_manager = JobManager.get_instance()
     job_manager.resume_pending_jobs(output_dir)
-    st.session_state.setdefault("selected_stem", None)
-    st.session_state.setdefault("selected_batch_id", None)
-    st.session_state.setdefault("workspace_page", "Dashboard")
-    if st.session_state["workspace_page"] not in WORKSPACE_PAGES:
-        st.session_state["workspace_page"] = "Dashboard"
-    if st.session_state.get("workspace_nav") != st.session_state["workspace_page"]:
-        st.session_state["workspace_nav"] = st.session_state["workspace_page"]
-
     all_docs = job_manager.list_all_documents(output_dir=output_dir)
     batches = list_batches(output_dir)
+    _restore_workspace_from_url(all_docs, batches)
+    if st.session_state["workspace_page"] not in WORKSPACE_PAGES:
+        st.session_state["workspace_page"] = "Dashboard"
+    _sync_workspace_url()
     render_workspace_styles()
 
     with st.sidebar:
@@ -2252,18 +2386,7 @@ def main() -> None:
         else:
             st.title("📑 Pengolah Dokumen AI")
         st.caption("Unggah, pantau, dan tinjau hasil dokumen dalam satu workspace.")
-        st.radio(
-            "Navigasi workspace",
-            WORKSPACE_PAGES,
-            key="workspace_nav",
-            format_func=lambda page: {
-                "Dashboard": "🏠  Dashboard",
-                "Upload": "📤  Upload",
-                "Histori": "🗂️  Histori",
-                "Dokumen": "📄  Dokumen aktif",
-            }[page],
-            on_change=_sync_workspace_page,
-        )
+        st.html(_workspace_navigation_html())
 
         st.markdown("---")
         st.header("⚙️ Pengaturan ekstraksi")
@@ -2295,6 +2418,7 @@ def main() -> None:
 
     workspace_page = st.session_state["workspace_page"]
     render_workspace_header(workspace_page)
+    _reset_main_scroll_after_navigation()
     render_active_ingest_status(output_dir)
 
     if workspace_page == "Dashboard":

@@ -30,6 +30,7 @@ data/
 dataset/download/
 dataset/downloaded/
 .zed/
+archive/
 
 # ============ Input pribadi (jangan commit) ============
 input/*
@@ -41,9 +42,6 @@ input/*
 Thumbs.db
 .DS_Store
 opencode.json
-
-# ============ Deployment ============
-deploy/
 
 # ============ Model ============
 model/
