@@ -46,7 +46,7 @@ class UploadedFileLike(Protocol):
 
 
 from app.job_tracker import JobManager, is_pid_alive
-from app.tabular_db import cross_verify_dual_track
+from app.tabular_db import cross_verify_dual_track, sanitize_markdown_tables
 from app.upload_batches import (
     create_batch,
     delete_batch,
@@ -1881,6 +1881,22 @@ def render_live_monitor(stem: str, output_path: Path) -> None:
 # ==============================================================================
 
 
+def render_extracted_markdown(markdown_text: str) -> None:
+    """Render line breaks in table cells without allowing arbitrary model HTML."""
+    safe_text = html.escape(markdown_text, quote=False)
+    # Pisahkan tag dari kata di kedua sisinya agar Markdown tetap mengenalinya
+    # pada bentuk seperti "kata<br>kata" di dalam sel tabel.
+    safe_text = re.sub(r"&lt;br\s*/?&gt;", " <br /> ", safe_text, flags=re.IGNORECASE)
+    safe_text = re.sub(
+        r"&lt;!--\s*(?:PAGE|SLIDE):\s*\d+\s*--&gt;",
+        "",
+        safe_text,
+        flags=re.IGNORECASE,
+    )
+    safe_text = re.sub(r"(?m)^(\s*)&gt;", r"\1>", safe_text)
+    st.markdown(safe_text, unsafe_allow_html=True)
+
+
 def render_completed_document_view(stem: str, output_path: Path) -> None:
     """Tampilkan antarmuka hasil ekstraksi komprehensif dokumen."""
     job_manager = JobManager.get_instance()
@@ -1892,6 +1908,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
     db_file = _get_sqlite_db_for_file(stem, output_path)
     images = get_document_images(stem, output_path)
     md_content = md_file.read_text(encoding="utf-8") if md_file.exists() else ""
+    md_content = sanitize_markdown_tables(md_content)
     pages_map = split_markdown_by_pages(md_content) if md_content else {}
 
     # Header Ringkasan Dokumen
@@ -2010,7 +2027,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                         for m_code in page_mermaids:
                             render_mermaid_html(m_code, height=320)
 
-                st.markdown(text_to_show)
+                render_extracted_markdown(text_to_show)
 
             from app.learning_ui import render_correction_form
 
@@ -2026,7 +2043,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
             st.info(
                 "ℹ️ Gambar halaman fisik tidak ditemukan untuk dokumen ini (mungkin dokumen diproses tanpa menyimpan kanvas halaman terpisah)."
             )
-            st.markdown(md_content)
+            render_extracted_markdown(md_content)
 
     # --------------------------------------------------------------------------
     # TAB 2: DUAL-TRACK GUARDRAIL AUDIT
@@ -2133,7 +2150,7 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                 )
 
             st.markdown("### 📄 Isi Teks Markdown")
-            st.markdown(md_content)
+            render_extracted_markdown(md_content)
         else:
             st.warning("Konten Markdown belum tersedia.")
 
@@ -2214,7 +2231,17 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
                                     )
                                     st.dataframe(df_rel_dtl, use_container_width=True)
 
-                    selected_tbl = st.selectbox("Pilih Tabel untuk Dilihat:", tables)
+                    default_table_index = (
+                        tables.index("transaction_details")
+                        if "transaction_details" in tables
+                        else 0
+                    )
+                    selected_tbl = st.selectbox(
+                        "Pilih Tabel untuk Dilihat:",
+                        tables,
+                        index=default_table_index,
+                        key=f"table_preview_{stem}",
+                    )
                     df_preview = pd.read_sql_query(
                         f"SELECT * FROM '{selected_tbl}' LIMIT 100;", conn
                     )

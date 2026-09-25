@@ -16,6 +16,7 @@ Environment="VLM_MAX_TOKENS=2048"
 Environment="OCR_BASE_URL=http://127.0.0.1:8081/v1"
 Environment="OCR_BACKEND=paddleocr_vl"
 Environment="OCR_MODEL=paddleocr-vl-1.6"
+Environment="OCR_MAX_TOKENS=8192"
 ExecStart=/bin/bash %h/document-agent/deploy/server/logged-exec.sh %h/document-agent/logs/streamlit.log %h/document-agent/.venv/bin/streamlit run app/streamlit_logic.py --server.address 0.0.0.0 --server.port 8501
 TimeoutStopSec=60
 Restart=always

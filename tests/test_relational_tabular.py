@@ -1,3 +1,4 @@
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,9 @@ from app.tabular_db import (
     TabularDatabaseManager,
     defensive_map_columns,
     merge_and_deduplicate_tables,
+    normalize_html_tables,
     parse_date_value,
+    parse_markdown_tables,
     process_page_tabular_agent,
 )
 
@@ -23,6 +26,33 @@ class TestRelationalTabularDB(unittest.TestCase):
 
     def tearDown(self):
         self.tmp_dir.cleanup()
+
+    def test_paddle_html_table_becomes_markdown_and_transaction_csv(self):
+        raw = (
+            "# Account Statement\n\n"
+            "<table border=1><tr><td>POSTING DATE</td><td>TRANSACTION DESCRIPTION</td>"
+            "<td>DEBIT AMOUNT</td><td>CREDIT AMOUNT</td><td>BALANCE</td></tr>"
+            "<tr><td>20240201</td><td>INCOMING SKN<br>Transfer</td>"
+            "<td></td><td>948,649,162.96</td><td>5,167,289,680.28</td></tr></table>"
+        )
+        normalized = normalize_html_tables(raw)
+        self.assertNotIn("<table", normalized)
+        self.assertIn("| --- |", normalized)
+        parsed = parse_markdown_tables(normalized)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["rows"][0][1], "INCOMING SKN Transfer")
+
+        event, _ = process_page_tabular_agent(
+            normalized, page_number=1, source_file="statement.pdf", db_path=self.db_path
+        )
+        self.assertEqual(event.rows_ingested_total, 1)
+        csv_path = next(
+            path for path in self.mgr.export_to_csv() if path.name == "transaction_details.csv"
+        )
+        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["credit"], "948649162.96")
 
     def test_relational_schema_creation(self):
         """Uji inisialisasi skema relasional document_headers, transaction_details, & document_signatories."""

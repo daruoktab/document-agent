@@ -2,18 +2,51 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from PIL import Image, ImageDraw
 
 from app.config import Settings
-from app.graph import DocumentExtractionPipeline
+from app.graph import DocumentExtractionPipeline, DocumentExtractionState
 from app.ocr import UnlimitedOCRExtractor, assess_ocr_quality, parse_grounding_regions
 from app.pdf import extract_pdf_native_text_by_page
 from app.preprocess import rotate_image_right_angle
+from app.schemas import OCRExtractionResult
 
 
 class TestOCRGrounding(unittest.TestCase):
+    def test_visual_rescue_keeps_more_complete_trusted_ocr_table(self) -> None:
+        headers = "| POSTING DATE | TRANSACTION DESCRIPTION | BALANCE |\n| --- | --- | --- |\n"
+        ocr_markdown = headers + "\n".join(
+            f"| 202402{i:02d} | Transfer {i} | {i} |" for i in range(1, 30)
+        )
+        vlm_markdown = headers + "\n".join(
+            f"| 202402{i:02d} | Transfer {i} | {i} |" for i in range(1, 9)
+        )
+        main_llm = MagicMock()
+        pipeline = DocumentExtractionPipeline(Settings(ocr_model="paddleocr-vl-1.6"), vlm=main_llm)
+        state: DocumentExtractionState = {
+            "image_path": "page.png",
+            "specs": ["plain"],
+            "requires_vlm_reading": True,
+            "ocr_result": OCRExtractionResult(
+                status="success",
+                markdown=ocr_markdown,
+                model="paddleocr-vl-1.6",
+                trust_level="high",
+            ).model_dump(),
+        }
+        with patch("app.graph.get_agent") as get_agent:
+            get_agent.return_value.run.return_value = vlm_markdown
+            selected = pipeline._node_extract_markdown(state)
+        final = pipeline._node_aggregate_and_judge(selected)
+
+        self.assertEqual(selected["ocr_status"], "accepted")
+        self.assertTrue(selected["preserve_ocr_table"])
+        self.assertIn("20240229", final["markdown_content"])
+        self.assertNotIn("20240229", vlm_markdown)
+        main_llm.invoke.assert_not_called()
+
     def test_parse_regions_maps_and_clamps_coordinates(self) -> None:
         raw = (
             "<|det|>table [100, 200, 900, 800]<|/det|>A | B\n"

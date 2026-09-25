@@ -7,7 +7,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=%h/document-agent/model
-ExecStart=/bin/bash %h/document-agent/deploy/server/logged-exec.sh %h/document-agent/logs/llama-server.log /usr/local/bin/llama-server -m gemma-4-12B-it-qat-UD-Q4_K_XL.gguf --mmproj mmproj-F32.gguf --jinja --device CUDA0 --mmproj-device CUDA0 -ngl 99 --ctx-size 8192 --parallel 1 --host 0.0.0.0 --port 8080 --alias gemma-4-12b-vlm --reasoning off --spec-type draft-mtp --spec-draft-model mtp-gemma-4-12B-it.gguf --spec-draft-device CUDA0 --spec-draft-ngl 99 --spec-draft-n-max 4 --image-min-tokens 1120 --image-max-tokens 1120 --ubatch-size 2048 --batch-size 2048 --temp 0.1 --top-p 0.9 --top-k 20 --repeat-penalty 1.05
+ExecStart=/bin/bash %h/document-agent/deploy/server/logged-exec.sh %h/document-agent/logs/llama-server.log /usr/local/bin/llama-server -m gemma-4-12B-it-qat-UD-Q4_K_XL.gguf --mmproj mmproj-F32.gguf --jinja --device CUDA0 --mmproj-device CUDA0 -ngl 99 --ctx-size 32768 --parallel 1 --host 0.0.0.0 --port 8080 --alias gemma-4-12b-vlm --reasoning off --spec-type draft-mtp --spec-draft-model mtp-gemma-4-12B-it.gguf --spec-draft-device CUDA0 --spec-draft-ngl 99 --spec-draft-n-max 4 --image-min-tokens 1120 --image-max-tokens 1120 --ubatch-size 2048 --batch-size 2048 --temp 0.1 --top-p 0.9 --top-k 20 --repeat-penalty 1.05
 ExecStartPost=%h/document-agent/.venv/bin/python %h/document-agent/deploy/server/wait-llama.py
 TimeoutStartSec=660
 TimeoutStopSec=60

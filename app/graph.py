@@ -59,6 +59,7 @@ class DocumentExtractionState(TypedDict, total=False):
     requires_vlm_reading: bool
     force_vlm_reading: bool
     ocr_force_judge: bool
+    preserve_ocr_table: bool
     ocr_result: dict[str, Any]
     ocr_status: str
     ocr_regions: list[dict[str, Any]]
@@ -464,6 +465,14 @@ class DocumentExtractionPipeline:
         ocr_result = OCRExtractionResult.model_validate(
             state.get("ocr_result", {"status": "disabled"})
         )
+        from .tabular_db import parse_markdown_tables
+
+        trusted_ocr_rows = (
+            sum(len(table["rows"]) for table in parse_markdown_tables(ocr_result.markdown))
+            if ocr_result.status == "success" and ocr_result.trust_level == "high"
+            else 0
+        )
+        preserve_ocr_table = False
 
         if ocr_result.decision == "blank_page":
             md_text = ""
@@ -493,6 +502,7 @@ class DocumentExtractionPipeline:
                 enabled=self.settings.textreflow_enabled and page_width > 0,
             )
             md_text = reflowed or ocr_result.markdown
+            preserve_ocr_table = trusted_ocr_rows >= 20
             ocr_result.textreflow_applied = reflowed is not None
             ocr_result.textreflow_reason = reflow_reason
             ocr_status = ocr_result.decision
@@ -509,7 +519,20 @@ class DocumentExtractionPipeline:
                 previous_page_context=prev_context,
                 native_text=state.get("native_text"),
             )
-            if state.get("requires_vlm_reading", False):
+            vlm_rows = sum(
+                len(table["rows"]) for table in parse_markdown_tables(md_text)
+            )
+            if trusted_ocr_rows > vlm_rows:
+                logger.warning(
+                    "[Pipeline:ExtractMarkdown] Tabel OCR lebih lengkap dari VLM (%d > %d baris); mempertahankan OCR.",
+                    trusted_ocr_rows,
+                    vlm_rows,
+                )
+                md_text = ocr_result.markdown
+                ocr_status = "accepted"
+                source = f"OCR ({ocr_result.model}), tabel lebih lengkap"
+                preserve_ocr_table = trusted_ocr_rows >= 20
+            elif state.get("requires_vlm_reading", False):
                 ocr_status = "vlm_visual_rescue"
                 source = "VLM utama independen (visual rescue teks/layout sulit)"
             else:
@@ -538,6 +561,7 @@ class DocumentExtractionPipeline:
             "document_title": current_title,
             "ocr_status": ocr_status,
             "ocr_force_judge": ocr_status != "blank_page",
+            "preserve_ocr_table": preserve_ocr_table,
             "ocr_result": ocr_result.model_dump(),
         }
 
@@ -678,6 +702,19 @@ class DocumentExtractionPipeline:
                         f"\n\n> **[Diagram Summary]:** {diagram_summaries[index]}"
                     )
                 combined_md += mermaid_block
+
+        if state.get("preserve_ocr_table") and not mermaid_codes:
+            from .tabular_db import sanitize_markdown_tables
+
+            final_md = sanitize_markdown_tables(combined_md)
+            logger.info(
+                "[Pipeline:AggregateJudge] Tabel OCR panjang dipercaya; melewati judge agar baris tidak terpotong."
+            )
+            return {
+                **state,
+                "markdown_content": final_md,
+                "final_markdown": final_md,
+            }
 
         # 2. Fast-path: skip judge untuk halaman simple yang bersih
         difficulty = state.get("difficulty") or _assess_difficulty_from_output(md_text)

@@ -199,7 +199,7 @@ class Settings:
     )
     ocr_timeout: float = field(default_factory=lambda: _float_env("OCR_TIMEOUT", "300"))
     ocr_max_tokens: int = field(
-        default_factory=lambda: _int_env("OCR_MAX_TOKENS", "4096")
+        default_factory=lambda: _int_env("OCR_MAX_TOKENS", "8192")
     )
     ocr_prompt: str = field(
         default_factory=lambda: _env(

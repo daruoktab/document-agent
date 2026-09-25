@@ -132,7 +132,7 @@ class PaddleOCRVLExtractor:
         model_name: str,
         api_key: str = "not-needed",
         timeout: float = 300,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         crop_padding: float = 0.01,
         min_trust_score: float = 0.72,
         medium_trust_score: float = 0.48,

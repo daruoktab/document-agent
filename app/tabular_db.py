@@ -27,6 +27,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -590,6 +591,74 @@ def parse_date_value(val_str: str) -> str | None:
     return None
 
 
+class _HtmlTableReader(HTMLParser):
+    """Read cell text from an OCR HTML table without depending on its styling."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self.row: list[str] | None = None
+        self.cell: list[str] | None = None
+        self.colspan = 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "tr":
+            self.row = []
+        elif tag in {"td", "th"} and self.row is not None:
+            self.cell = []
+            attributes = dict(attrs)
+            try:
+                self.colspan = max(1, int(attributes.get("colspan") or 1))
+            except ValueError:
+                self.colspan = 1
+        elif tag == "br" and self.cell is not None:
+            self.cell.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self.row is not None and self.cell is not None:
+            value = " ".join("".join(self.cell).split()).replace("|", "&#124;")
+            self.row.extend([value, *([""] * (self.colspan - 1))])
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            if self.row:
+                self.rows.append(self.row)
+            self.row = None
+
+
+def normalize_html_tables(markdown_text: str) -> str:
+    """Convert OCR HTML tables to GFM tables for the viewer and SQL ingest."""
+    if not re.search(r"<table\b", markdown_text, re.IGNORECASE):
+        return markdown_text
+
+    table_re = re.compile(r"<table\b[^>]*>.*?</table\s*>", re.IGNORECASE | re.DOTALL)
+    fence_re = re.compile(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$")
+    fenced_spans = [match.span() for match in fence_re.finditer(markdown_text)]
+
+    def replace_table(match: re.Match[str]) -> str:
+        if any(start <= match.start() < end for start, end in fenced_spans):
+            return match.group(0)
+        reader = _HtmlTableReader()
+        reader.feed(match.group(0))
+        rows = reader.rows
+        if not rows:
+            return match.group(0)
+        width = max(map(len, rows))
+        headers = rows[0] + [f"Kolom {index}" for index in range(len(rows[0]) + 1, width + 1)]
+
+        def markdown_row(cells: list[str]) -> str:
+            return "| " + " | ".join(cells + [""] * (width - len(cells))) + " |"
+
+        lines = [markdown_row(headers), markdown_row(["---"] * width)]
+        lines.extend(markdown_row(row) for row in rows[1:])
+        return "\n\n" + "\n".join(lines) + "\n\n"
+
+    return table_re.sub(replace_table, markdown_text)
+
+
 def sanitize_markdown_tables(markdown_text: str) -> str:
     """
     Normalisasi dan perbaiki tabel Markdown (GFM) yang rusak atau anomali:
@@ -597,11 +666,46 @@ def sanitize_markdown_tables(markdown_text: str) -> str:
     2. Hapus baris kosong yang tidak disengaja di tengah-tengah tabel sebelum baris data berikutnya.
     3. Normalisasi baris data yang mengandung pemisah pipa palsu (contoh: `|-----| |-----|`) agar jumlah kolom konsisten dengan header.
     4. Pastikan baris tabel diawali dan diakhiri dengan pipa `|`.
+    5. Tambahkan header generik untuk tabel lanjutan yang hanya berisi baris data.
     """
+    markdown_text = normalize_html_tables(markdown_text)
     if not markdown_text or "|" not in markdown_text:
         return markdown_text
 
     lines = markdown_text.splitlines()
+    # Tabel yang berlanjut di halaman berikutnya kadang dimulai langsung dengan
+    # baris data. Tanpa separator, Markdown menampilkan semua tanda pipa mentah.
+    repaired_lines: list[str] = []
+    line_index = 0
+    in_code_fence = False
+    while line_index < len(lines):
+        stripped = lines[line_index].strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+        if not in_code_fence and stripped.startswith("|") and stripped.endswith("|"):
+            run_end = line_index
+            while (
+                run_end < len(lines)
+                and lines[run_end].strip().startswith("|")
+                and lines[run_end].strip().endswith("|")
+            ):
+                run_end += 1
+            run = lines[line_index:run_end]
+            widths = [len(row.strip().strip("|").split("|")) for row in run]
+            has_separator = any(
+                re.match(r"^\|(\s*:?-+:?\s*\|)+$", row.strip()) for row in run
+            )
+            if len(run) >= 2 and len(set(widths)) == 1 and widths[0] >= 2 and not has_separator:
+                repaired_lines.append(
+                    "| " + " | ".join(f"Kolom {col}" for col in range(1, widths[0] + 1)) + " |"
+                )
+                repaired_lines.append("| " + " | ".join(["---"] * widths[0]) + " |")
+            repaired_lines.extend(run)
+            line_index = run_end
+            continue
+        repaired_lines.append(lines[line_index])
+        line_index += 1
+    lines = repaired_lines
     result_lines: list[str] = []
     i = 0
     in_table = False
