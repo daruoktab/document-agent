@@ -73,7 +73,7 @@ EXCEL_MAX_DPI=450
 EXCEL_SMALL_FONT_POINTS=8
 ```
 
-Ketika `OCR_MODEL` diisi, pipeline resmi PaddleOCR-VL menjalankan layout analysis lokal dan mengirim crop elemen ke recognizer GGUF. Hasilnya menjadi draft utama hanya setelah lolos quality gate. TextReflow diterapkan otomatis pada halaman prosa satu/dua kolom yang tidak mengandung tabel, formula, atau figure; halaman lain mempertahankan Markdown Paddle. Pipeline membandingkan hasil dengan text-layer PDF, mencoba rotasi alternatif pada kandidat berisiko, dan memakai Gemma secara independen saat trust OCR rendah. Crop `table` dan `figure` disimpan ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis Mermaid. `OCR_MODEL=` tetap aman karena mengaktifkan fallback Gemma.
+Ketika `OCR_MODEL` diisi, pipeline resmi PaddleOCR-VL menjalankan layout analysis lokal dan mengirim crop elemen ke recognizer GGUF. Hasilnya menjadi draft utama hanya setelah lolos quality gate. TextReflow diterapkan otomatis pada halaman prosa satu/dua kolom yang tidak mengandung tabel, formula, atau figure; halaman lain mempertahankan Markdown Paddle. Pipeline membandingkan hasil dengan text-layer PDF, mencoba rotasi alternatif pada kandidat berisiko, dan memakai Gemma secara independen saat trust OCR rendah. Crop `table` dan `figure` disimpan ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis visual untuk dipilah menjadi Mermaid flowchart atau deskripsi terstruktur. `OCR_MODEL=` tetap aman karena mengaktifkan fallback Gemma.
 
 Untuk Excel, pipeline menyurvei isi, formula, relasi antarsheet, grafik, merge, style, dan blok tabel sebelum rendering. Peran sheet ditentukan dari pola isinya—dashboard dirender sebagai konteks visual, ringkasan dibentuk dari nilai native, data detail dilampirkan lengkap melalui SQLite/CSV, dan sheet formula pendukung tetap tercatat untuk audit. Grafik native diubah menjadi narasi serta tabel Markdown; font kecil atau teks miring tetap dapat memicu pembacaan VLM adaptif.
 
@@ -154,16 +154,11 @@ MCP tool: `render_presentation_slides` (lihat §MCP Tools di bawah).
 Tidak semua gambar visual pada dokumen cocok diubah menjadi diagram Mermaid. Modul analisis diagram mengevaluasi kelayakan secara selektif sebelum melakukan konversi sintaks:
 
 1. **Kategori yang Cocok untuk Mermaid (`is_convertible = True`)**:
-   - `flowchart`: Alur proses bisnis, pohon keputusan, alur logika (`flowchart TD` / `LR`).
-   - `sequence_diagram`: Interaksi antar aktor, sistem, API, atau servis (`sequenceDiagram`).
-   - `class_diagram`: Diagram kelas UML, struktur atribut & method (`classDiagram`).
-   - `state_diagram`: State machine, siklus hidup status (`stateDiagram-v2`).
-   - `er_diagram`: Entity Relationship Diagram data relasional (`erDiagram`).
-   - `mindmap`: Peta konsep hierarkis bertingkat (`mindmap`).
-   - `gantt_chart`: Jadwal linimasa proyek & milestone (`gantt`).
-   - `block_architecture`: Arsitektur blok/komponen sistem (`flowchart` dengan `subgraph`).
+   - `flowchart`: Alur proses bisnis, workflow, swimlane, pohon keputusan, dan alur logika dengan langkah serta panah yang terlihat jelas (`flowchart TD` / `LR`).
 
 2. **Kategori yang Tidak Cocok untuk Mermaid (`is_convertible = False`)**:
+   - Sequence, ERD, class/state diagram, mindmap, Gantt, bagan organisasi, dan arsitektur blok.
+   - Topologi jaringan, pinout, memory map, circuit, serta timing diagram.
    - Grafik numerik kontinu padat (scatter plot, multi-series line chart, histogram, heatmap).
    - Peta geografis / denah spasial.
    - Foto realistis, gambar anatomi biologis, atau seni bebas.
@@ -216,7 +211,7 @@ Semua tool Deep Agent terintegrasi dengan konfigurasi caller: `db_path` dan `out
 |:---|:---|:---|
 | `layout-classifier` | Deteksi multi-trait tata letak dokumen (kolom, hierarki, slide, tabel) | `classify_layout` |
 | `markdown-extractor` | Ekstraksi gambar multimodal ke Markdown bersih berbasis spesifikasi komposit via VLM | `extract_to_markdown` |
-| `diagram-mermaid-specialist` | Evaluasi selektif & ekstraksi diagram visual ke kode Mermaid.js yang valid | `classify_diagram_suitability`, `extract_diagram_to_mermaid` |
+| `diagram-mermaid-specialist` | Ekstraksi keluarga flowchart ke Mermaid dan deskripsi terstruktur untuk visual lainnya | `classify_diagram_suitability`, `extract_diagram_to_mermaid` |
 | `presentation-specialist` | Ekstraksi slide PowerPoint (.pptx/.ppt): render gambar per slide, lalu dibaca VLM menjadi Markdown | `extract_presentation_pptx` |
 | `pdf-orchestrator` | Orkestrasi pemrosesan PDF multi-halaman & penyambungan kontinuitas heading | `extract_pdf_document` |
 | `tabular-db-specialist` | Deteksi tabel transaksional, simpan ke SQLite, verifikasi ganda, & eksekusi query SQL | `classify_table_storage`, `ingest_table_to_sqlite`, `verify_sqlite_table`, `query_tabular_database` |
@@ -232,8 +227,8 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
 2. **`process_document_batch`**: Ekstraksi dokumen massal dari folder terpilih.
 3. **`extract_document`**: Ekstraksi file dokumen tunggal (PDF, DOCX, Excel, PPTX, gambar) ke Markdown siap chunking.
 4. **`classify_document_layout`**: Deteksi multi-trait spesifikasi tata letak dokumen.
-5. **`classify_diagram_convertibility`**: Evaluasi kelayakan visual diagram untuk konversi ke Mermaid.js.
-6. **`extract_diagram_to_mermaid`**: Ekstraksi diagram visual ke kode Mermaid.js yang valid secara sintaks.
+5. **`classify_diagram_convertibility`**: Evaluasi apakah visual merupakan keluarga flowchart yang layak menjadi Mermaid.js.
+6. **`extract_diagram_to_mermaid`**: Ekstraksi flowchart ke Mermaid.js atau deskripsi terstruktur untuk visual lain.
 7. **`render_presentation_slides`**: Render slide presentasi (.pptx/.ppt) menjadi file gambar PNG beresolusi tinggi (LibreOffice headless).
 8. **`preview_markdown_chunks`**: Simulasi partisi teks Markdown dengan header metadata.
 9. **`classify_and_ingest_tables_to_sqlite`**: Ingesti otomatis tabel transaksional ke SQLite dengan double-verification.

@@ -20,7 +20,7 @@ class TestOCRSettings(unittest.TestCase):
         self.assertEqual(settings.ocr_model, "")
         self.assertEqual(settings.ocr_base_url, "http://127.0.0.1:8081/v1")
         self.assertEqual(settings.ocr_temperature, 0.0)
-        self.assertEqual(settings.ocr_max_tokens, 4096)
+        self.assertEqual(settings.ocr_max_tokens, 8192)
         self.assertEqual(
             settings.ocr_prompt,
             "<|grounding|>Convert the document to markdown.",

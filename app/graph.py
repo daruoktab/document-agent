@@ -65,6 +65,7 @@ class DocumentExtractionState(TypedDict, total=False):
     ocr_regions: list[dict[str, Any]]
     diagram_mermaid_codes: list[str]
     diagram_summaries: list[str]
+    visual_descriptions: list[str]
     final_markdown: str
 
 
@@ -87,6 +88,21 @@ def _has_diagram_indicators(markdown: str) -> bool:
     if any(ind in markdown for ind in DIAGRAM_OUTPUT_INDICATORS):
         return True
     return bool(_FIGURE_LABEL_RE.search(markdown))
+
+
+def _format_visual_description(description: str) -> str:
+    """Format specialist output as one structured visual blockquote."""
+    cleaned = description.strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith("> **[Diagram/Visual]:**"):
+        return cleaned
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(
+        [f"> **[Diagram/Visual]:** {lines[0]}", *(f"> {line}" for line in lines[1:])]
+    )
 
 
 def count_visuals(markdown: str) -> int:
@@ -568,9 +584,8 @@ class DocumentExtractionPipeline:
     def _node_summon_diagram_specialist(
         self, state: DocumentExtractionState
     ) -> DocumentExtractionState:
-        """Tahap 5: kirim crop figure OCR ke spesialis Mermaid VLM utama."""
+        """Tahap 5: klasifikasikan crop visual menjadi flowchart atau deskripsi."""
         has_diag = state.get("has_diagram", False)
-        specs = state.get("specs", [])
         md_content = state.get("markdown_content", "")
         if state.get("ocr_status") == "blank_page":
             return state
@@ -587,10 +602,7 @@ class DocumentExtractionPipeline:
         # "> **[Diagram/Visual]:** ..." jika ada diagram -> kita manfaatkan itu.
         output_has_diagram = _has_diagram_indicators(md_content)
 
-        if self.thorough:
-            should_summon = has_diag or output_has_diagram or "presentation_slides" in specs
-        else:
-            should_summon = has_diag or output_has_diagram
+        should_summon = has_diag or output_has_diagram or bool(figure_crops)
 
         if not should_summon:
             logger.info(
@@ -611,6 +623,7 @@ class DocumentExtractionPipeline:
 
         mermaid_codes: list[str] = []
         diagram_summaries: list[str] = []
+        visual_descriptions: list[str] = []
         for target in targets:
             diag_result = extract_diagram_to_mermaid(
                 image_path=target,
@@ -619,8 +632,11 @@ class DocumentExtractionPipeline:
             )
             if diag_result.mermaid_code:
                 mermaid_codes.append(diag_result.mermaid_code)
-            if diag_result.text_summary:
-                diagram_summaries.append(diag_result.text_summary)
+                diagram_summaries.append(diag_result.text_summary or "")
+            elif diag_result.text_description or diag_result.text_summary:
+                visual_descriptions.append(
+                    diag_result.text_description or diag_result.text_summary or ""
+                )
         elapsed = (time.perf_counter() - t0) * 1000
 
         if mermaid_codes:
@@ -638,9 +654,16 @@ class DocumentExtractionPipeline:
         return {
             **state,
             "diagram_mermaid_code": mermaid_codes[0] if mermaid_codes else None,
-            "diagram_summary": diagram_summaries[0] if diagram_summaries else None,
+            "diagram_summary": (
+                diagram_summaries[0]
+                if diagram_summaries
+                else visual_descriptions[0]
+                if visual_descriptions
+                else None
+            ),
             "diagram_mermaid_codes": mermaid_codes,
             "diagram_summaries": diagram_summaries,
+            "visual_descriptions": visual_descriptions,
         }
 
     def _node_aggregate_and_judge(
@@ -667,8 +690,14 @@ class DocumentExtractionPipeline:
         diagram_summaries = state.get("diagram_summaries", [])
         specs = state.get("specs", ["plain"])
 
-        # 1. Satukan blok diagram Mermaid ke Markdown jika belum ada
-        combined_md = md_text
+        # 1. Terapkan kebijakan keluaran visual dan satukan hasil specialist.
+        from .diagram import retain_flowchart_mermaid
+
+        combined_md = retain_flowchart_mermaid(md_text)
+        for description in state.get("visual_descriptions", []):
+            description_block = _format_visual_description(description)
+            if description_block and description_block not in combined_md:
+                combined_md += f"\n\n{description_block}"
         for index, mermaid_code in enumerate(mermaid_codes):
             from .diagram import sanitize_mermaid_code, validate_mermaid_syntax
 
@@ -747,7 +776,11 @@ class DocumentExtractionPipeline:
         )
 
         # 4. Guardrail Pasca-Judge: Sanitasi tabel & validasi ulang blok Mermaid
-        from .diagram import sanitize_mermaid_code, validate_mermaid_syntax
+        from .diagram import (
+            is_flowchart_mermaid,
+            sanitize_mermaid_code,
+            validate_mermaid_syntax,
+        )
         from .tabular_db import sanitize_markdown_tables
 
         final_md = sanitize_markdown_tables(final_md)
@@ -756,7 +789,11 @@ class DocumentExtractionPipeline:
 
         def valid_block(code: str) -> bool:
             sanitized = sanitize_mermaid_code(code)
-            return bool(sanitized and validate_mermaid_syntax(sanitized)[0])
+            return bool(
+                sanitized
+                and is_flowchart_mermaid(sanitized)
+                and validate_mermaid_syntax(sanitized)[0]
+            )
 
         if original_blocks and all(valid_block(code) for code in original_blocks) and (
             len(final_blocks) < len(original_blocks) or not all(valid_block(code) for code in final_blocks)
@@ -766,7 +803,7 @@ class DocumentExtractionPipeline:
         def _clean_mermaid_in_md(m: re.Match) -> str:
             raw_code = m.group(1)
             sanitized = sanitize_mermaid_code(raw_code)
-            if sanitized:
+            if sanitized and is_flowchart_mermaid(sanitized):
                 is_valid, _ = validate_mermaid_syntax(sanitized)
                 if is_valid:
                     return f"```mermaid\n{sanitized}\n```"
@@ -778,6 +815,10 @@ class DocumentExtractionPipeline:
             final_md,
             flags=re.IGNORECASE,
         )
+        for description in state.get("visual_descriptions", []):
+            description_block = _format_visual_description(description)
+            if description_block and description_block not in final_md:
+                final_md += f"\n\n{description_block}"
 
         final_status = state.get("ocr_status", "disabled")
         if (

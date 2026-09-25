@@ -532,7 +532,7 @@ class TestExcelRegionSurvey(unittest.TestCase):
             self.assertIn("Data lengkap", markdown)
             self.assertIn(str(csv_path), markdown)
             self.assertIn("Sheet pendukung", markdown)
-            self.assertEqual(sections[0][0], "Visual")
+            self.assertEqual(sections[0][0], "Records")
 
     def test_wide_region_is_tiled_and_can_be_combined(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

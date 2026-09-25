@@ -120,9 +120,10 @@ def get_subagent_task_directives(
         ],
         "subagent_directives": {
             "mermaid_specialist": {
-                "trigger": "Visual memuat alur proses, flowchart, sequence, pohon keputusan, class diagram, ERD, finite state machine, atau mindmap",
+                "trigger": "Visual memuat flowchart, workflow, swimlane, atau pohon keputusan dengan arah alur yang jelas",
                 "mandatory_action": (
-                    "WAJIB diekstrak sebagai blok kode ```mermaid (misal flowchart TD / flowchart LR / sequenceDiagram). "
+                    "Hanya keluarga flowchart yang diekstrak sebagai blok kode ```mermaid menggunakan flowchart TD/LR. "
+                    "Sequence, ERD, class/state, arsitektur, mindmap, grafik, dan visual lain wajib menjadi deskripsi terstruktur. "
                     "DILARANG KERAS menggunakan panah teks biasa (↓, ->, -->) dalam daftar teks untuk diagram alir. "
                     "Gunakan identifier bersih (tanpa spasi/simbol) dan beri tanda kutip ganda pada label teks node. "
                     "Jika satu label node terdiri dari beberapa baris atau memuat line break visual, "

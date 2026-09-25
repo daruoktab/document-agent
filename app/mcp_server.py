@@ -273,7 +273,7 @@ def classify_document_layout(image_path: str) -> str:
 
 @server.tool(
     name="classify_diagram_convertibility",
-    description="Evaluasi kelayakan diagram visual: apakah cocok dikonversi ke Mermaid (flowchart, ERD, sequence, state, class, mindmap, block diagram) atau tidak.",
+    description="Evaluasi apakah visual merupakan flowchart yang cocok dikonversi ke Mermaid; tipe lain diarahkan ke deskripsi.",
 )
 def classify_diagram_convertibility(image_path: str) -> str:
     """
@@ -301,7 +301,7 @@ def classify_diagram_convertibility(image_path: str) -> str:
 
 @server.tool(
     name="extract_diagram_to_mermaid",
-    description="Ekstrak diagram visual pada dokumen menjadi kode Mermaid.js yang valid secara sintaks.",
+    description="Ekstrak flowchart menjadi Mermaid.js; kembalikan deskripsi terstruktur untuk visual selain flowchart.",
 )
 def extract_diagram_to_mermaid(
     image_path: str,

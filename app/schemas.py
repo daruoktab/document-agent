@@ -814,7 +814,7 @@ class DiagramFormatRecommendation(BaseModel):
         ..., description="True jika visual cocok dijadikan diagram Mermaid.js"
     )
     suggested_syntax: str | None = Field(
-        default=None, description="Saran sintaks Mermaid (mis. flowchart TD, sequenceDiagram)"
+        default=None, description="Saran sintaks Mermaid flowchart TD atau flowchart LR"
     )
     rationale: str = Field(
         default="", description="Alasan logis pemilihan format ekstraksi"
@@ -827,11 +827,11 @@ class DiagramFormatRecommendation(BaseModel):
 
 
 class DiagramConvertibilityResult(BaseModel):
-    """Hasil evaluasi kelayakan diagram visual untuk diekstrak menjadi kode Mermaid.js."""
+    """Hasil evaluasi apakah visual termasuk keluarga flowchart untuk Mermaid."""
 
     is_convertible: bool = Field(
         ...,
-        description="True jika diagram memiliki simpul dan relasi diskrit yang cocok untuk Mermaid",
+        description="True hanya untuk keluarga flowchart dengan langkah dan arah yang jelas",
     )
     diagram_type: DiagramTypeLiteral = Field(
         ..., description="Kategori diagram visual yang terdeteksi"
@@ -842,7 +842,7 @@ class DiagramConvertibilityResult(BaseModel):
     )
     mermaid_type: str | None = Field(
         default=None,
-        description="Tipe diagram Mermaid jika cocok (mis. flowchart, sequenceDiagram, erDiagram, classDiagram, stateDiagram, mindmap)",
+        description="Tipe Mermaid jika cocok; kebijakan keluaran hanya mengizinkan flowchart",
     )
     confidence: float = Field(
         default=1.0, description="Tingkat keyakinan deteksi kelayakan (0.0 - 1.0)"
