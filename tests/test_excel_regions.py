@@ -450,8 +450,10 @@ class TestExcelRegionSurvey(unittest.TestCase):
             self.assertEqual(roles["Rollup"], "summary")
             self.assertEqual(roles["ChartData"], "support")
             self.assertEqual(roles["Records"], "detail")
-            self.assertEqual(survey.extraction_order[0], "Visual")
-            self.assertEqual(survey.extraction_order[-1], "ChartData")
+            self.assertEqual(
+                survey.extraction_order,
+                ["Records", "Rollup", "ChartData", "Visual"],
+            )
             self.assertEqual(len(visual_regions), 1)
             self.assertEqual(visual_regions[0].sheet_name, "Visual")
             self.assertEqual(visual_regions[0].render_strategy, "visual")

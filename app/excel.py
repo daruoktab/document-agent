@@ -1192,14 +1192,9 @@ def _classify_excel_sheets(
                     < _SUPPORT_CONSUMED_COVERAGE
                 )
 
-    role_order = {"dashboard": 0, "summary": 1, "plain": 2, "detail": 3, "support": 4}
-    return [
-        sheet.name
-        for sheet in sorted(
-            (item for item in sheets if item.visible),
-            key=lambda item: (role_order[item.role], item.index),
-        )
-    ]
+    # Hasil Markdown mengikuti urutan tab Excel; peran sheet tetap menentukan
+    # strategi ekstraksi dan tampilan visual, bukan urutan baca dokumen.
+    return [sheet.name for sheet in sheets if sheet.visible]
 
 
 def _region_native_text(
