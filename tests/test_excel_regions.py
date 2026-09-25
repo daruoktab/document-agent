@@ -563,6 +563,36 @@ class TestExcelRegionSurvey(unittest.TestCase):
                 {f"{get_column_letter(column)}{row}" for column in range(1, 25) for row in range(1, 35)},
             )
 
+    def test_tiled_table_is_rendered_as_one_markdown_table(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tall_table.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Summary"
+            sheet["A1"] = "Monthly settlement"
+            sheet["A2"] = "Region"
+            sheet["B2"] = "Amount"
+            for row in range(3, 15):
+                sheet.cell(row, 1, f"Region {row - 2}")
+                sheet.cell(row, 2, row * 100)
+            workbook.save(path)
+
+            settings = Settings(excel_tile_max_columns=8, excel_tile_max_rows=4)
+            tiled = split_excel_regions_into_tiles(
+                survey_excel_workbook(path, settings=settings), settings,
+            )
+            tiled = tiled.model_copy(update={
+                "sheets": [tiled.sheets[0].model_copy(update={"role": "summary"})],
+            })
+            regions = tiled.sheets[0].regions
+            self.assertGreater(len(regions), 1)
+
+            markdown, _ = compose_excel_markdown(tiled, fallback_title="Summary")
+
+            self.assertEqual(markdown.count("| Region | Amount |"), 1)
+            for row in range(1, 13):
+                self.assertEqual(markdown.count(f"| Region {row} |"), 1)
+
     @unittest.skipUnless(_find_libreoffice_binary(), "LibreOffice tidak tersedia")
     def test_region_renderer_produces_one_page_per_region(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

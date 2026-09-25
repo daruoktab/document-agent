@@ -1182,6 +1182,36 @@ def get_document_images(stem: str, output_dir: Path) -> list[Path]:
     return []
 
 
+def get_excel_sheet_previews(stem: str, output_dir: Path) -> list[dict[str, Any]]:
+    """Baca gambar pembanding Excel beserta identitas sheet setiap gambar."""
+    preview_dir = output_dir / stem / "sheet_previews"
+    manifest_path = preview_dir / "manifest.json"
+    if not manifest_path.exists():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    previews = []
+    for entry in manifest.get("pages", []):
+        image_path = preview_dir / Path(entry.get("image", "")).name
+        if image_path.is_file() and entry.get("sheet_name"):
+            previews.append({**entry, "image_path": image_path})
+    return previews
+
+
+def split_markdown_by_sheets(markdown_text: str) -> dict[str, str]:
+    """Pasangkan section Markdown workbook dengan nama tab Excel."""
+    matches = list(re.finditer(r"(?m)^## Sheet: ([^\n]+)$", markdown_text))
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown_text)
+        content = markdown_text[match.start():end].strip()
+        content = re.split(r"(?m)^## Peringatan Workbook$", content, maxsplit=1)[0].strip()
+        sections[match.group(1).strip()] = content.removesuffix("---").rstrip()
+    return sections
+
+
 def split_markdown_by_pages(markdown_text: str) -> dict[int, str]:
     """Bagi teks markdown menjadi per halaman/slide berdasarkan penanda dokumen."""
     pages: dict[int, str] = {}
@@ -1273,6 +1303,7 @@ def build_document_zip(stem: str, output_dir: Path) -> bytes:
             "- File .md berisi teks hasil ekstraksi.\n"
             "- Folder csv dan databases berisi data tabel.\n"
             "- Folder pages atau slides berisi gambar tiap halaman.\n"
+            "- Folder sheet_previews berisi gambar pembanding tiap sheet Excel.\n"
             "- Folder logs berisi catatan teknis proses.\n",
         )
 
@@ -1907,15 +1938,21 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
 
     db_file = _get_sqlite_db_for_file(stem, output_path)
     images = get_document_images(stem, output_path)
+    sheet_previews = get_excel_sheet_previews(stem, output_path)
     md_content = md_file.read_text(encoding="utf-8") if md_file.exists() else ""
     md_content = sanitize_markdown_tables(md_content)
     pages_map = split_markdown_by_pages(md_content) if md_content else {}
+    sheet_sections = split_markdown_by_sheets(md_content) if sheet_previews else {}
 
     # Header Ringkasan Dokumen
     col_top1, col_top2 = st.columns([3.5, 1.5])
     with col_top1:
         st.subheader(f"📄 Hasil dokumen: `{stem}`")
-        badge_pages = f"{len(images)} halaman/slide" if images else "Hasil teks"
+        badge_pages = (
+            f"{len(sheet_previews)} gambar · {len({p['sheet_name'] for p in sheet_previews})} sheet"
+            if sheet_previews
+            else f"{len(images)} halaman/slide" if images else "Hasil teks"
+        )
         st.caption(f"Selesai diproses · {badge_pages} · File hasil: `{md_file.name}`")
     with col_top2:
         zip_identity = (
@@ -1963,7 +2000,45 @@ def render_completed_document_view(stem: str, output_path: Path) -> None:
             "Bandingkan tampilan halaman asli di sebelah kiri dengan teks yang terbaca di sebelah kanan."
         )
 
-        if images:
+        if sheet_previews and sheet_sections:
+            sheet_names = list(dict.fromkeys(page["sheet_name"] for page in sheet_previews))
+            selected_sheet = st.selectbox(
+                "Pilih sheet:", sheet_names, key=f"compare_sheet_{stem}"
+            )
+            selected_previews = [
+                page for page in sheet_previews if page["sheet_name"] == selected_sheet
+            ]
+            selected_preview_index = st.selectbox(
+                "Pilih bagian sheet:",
+                range(len(selected_previews)),
+                format_func=lambda index: (
+                    f"Bagian {selected_previews[index]['sheet_page']} dari {len(selected_previews)} · "
+                    f"{selected_previews[index]['cell_range']}"
+                ),
+                key=f"compare_sheet_page_{stem}_{selected_sheet}",
+            )
+            selected_preview = selected_previews[selected_preview_index]
+            col_img, col_text = st.columns([1.1, 1], gap="medium")
+            with col_img:
+                st.markdown(f"##### 🖼️ Sheet asli · {selected_sheet}")
+                st.caption(f"Rentang sel: {selected_preview['cell_range']}")
+                preview_image = selected_preview["image_path"]
+                st.image(str(preview_image), use_container_width=True)
+                st.download_button(
+                    "⬇️ Unduh gambar bagian sheet",
+                    data=preview_image.read_bytes(),
+                    file_name=f"{stem}_{selected_sheet}_{selected_preview['sheet_page']}.png",
+                    mime="image/png",
+                    key=f"download_sheet_preview_{stem}_{selected_sheet}",
+                )
+            with col_text:
+                st.markdown(f"##### ✍️ Hasil Markdown · {selected_sheet}")
+                section = sheet_sections.get(selected_sheet)
+                if section:
+                    render_extracted_markdown(section)
+                else:
+                    st.warning("Bagian Markdown untuk sheet ini belum tersedia.")
+        elif images:
             total_imgs = len(images)
             col_ctl1, col_ctl2 = st.columns([2, 2])
             with col_ctl1:

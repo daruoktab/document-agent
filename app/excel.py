@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DEFAULT_DPI, Settings, get_settings
-from .pdf import pdf_page_count, process_multipage_pdf
+from .pdf import pdf_page_count, pdf_to_images, process_multipage_pdf
 from .ppt import _find_libreoffice_binary
 from .schemas import (
     ExcelCellEvidence,
@@ -2136,6 +2137,120 @@ finally:
         time.sleep(0.5)
 
 
+def plan_excel_sheet_previews(survey: ExcelWorkbookSurvey) -> list[ExcelRegion]:
+    """Rencanakan gambar pembanding tanpa menambah pekerjaan OCR/VLM."""
+    from openpyxl.utils.cell import range_boundaries
+
+    sheets = {sheet.name: sheet for sheet in survey.sheets}
+    previews: list[ExcelRegion] = []
+    for sheet_name in survey.extraction_order:
+        sheet = sheets[sheet_name]
+        if not sheet.visible:
+            continue
+        min_col, min_row, max_col, max_row = (
+            range_boundaries(sheet.used_range) if sheet.used_range else (1, 1, 1, 1)
+        )
+        rows = max_row - min_row + 1
+        columns = max_col - min_col + 1
+        # Sheet data besar dipaginasi supaya hasil cetaknya tetap terbaca.
+        row_step = 50 if sheet.role == "detail" or rows > 80 or columns > 30 else rows
+        col_step = 20 if sheet.role == "detail" or rows > 80 or columns > 30 else columns
+        sheet_page = 0
+        for row_start in range(min_row, max_row + 1, row_step):
+            row_end = min(row_start + row_step - 1, max_row)
+            for col_start in range(min_col, max_col + 1, col_step):
+                col_end = min(col_start + col_step - 1, max_col)
+                sheet_page += 1
+                previews.append(
+                    ExcelRegion(
+                        region_id=f"sheet_preview_{sheet.index + 1:03d}_{sheet_page:03d}",
+                        sheet_name=sheet.name,
+                        sheet_index=sheet.index,
+                        cell_range=(
+                            f"{_column_letter(col_start)}{row_start}:"
+                            f"{_column_letter(col_end)}{row_end}"
+                        ),
+                        min_row=row_start,
+                        max_row=row_end,
+                        min_column=col_start,
+                        max_column=col_end,
+                        title=sheet.name,
+                        kind="mixed",
+                        render_strategy="visual",
+                        persist_native=False,
+                    )
+                )
+    return previews
+
+
+def render_excel_sheet_previews(
+    excel_path: Path,
+    survey: ExcelWorkbookSurvey,
+    output_root: Path,
+    temporary_root: Path,
+) -> list[dict[str, Any]]:
+    """Simpan gambar tiap sheet dan pemetaan gambarnya ke section Markdown."""
+    regions = plan_excel_sheet_previews(survey)
+    if not regions:
+        return []
+    pdf_path = temporary_root / "sheet_previews.pdf"
+    if not _convert_excel_regions_to_pdf(
+        excel_path, pdf_path, temporary_root / "lo_sheet_preview_profile", regions
+    ):
+        logger.warning("[Excel] Gambar pembanding per sheet tidak dapat dirender.")
+        return []
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    staged_dir = Path(tempfile.mkdtemp(prefix=".sheet_previews_", dir=output_root))
+    try:
+        images = pdf_to_images(pdf_path, staged_dir, dpi=160)
+        if len(images) != len(regions):
+            raise RuntimeError(
+                f"Jumlah gambar sheet {len(images)} tidak sesuai rencana {len(regions)}."
+            )
+        from PIL import Image
+
+        for image_path in images:
+            with Image.open(image_path) as original:
+                grayscale = original.convert("L")
+                bounds = grayscale.point(lambda value: 255 if value < 245 else 0).getbbox()
+                if bounds:
+                    margin = 24
+                    crop = (
+                        max(0, bounds[0] - margin),
+                        max(0, bounds[1] - margin),
+                        min(original.width, bounds[2] + margin),
+                        min(original.height, bounds[3] + margin),
+                    )
+                    original.crop(crop).save(image_path)
+        page_counts: dict[str, int] = {}
+        entries: list[dict[str, Any]] = []
+        for image_path, region in zip(images, regions, strict=True):
+            page_counts[region.sheet_name] = page_counts.get(region.sheet_name, 0) + 1
+            entries.append(
+                {
+                    "sheet_name": region.sheet_name,
+                    "sheet_index": region.sheet_index,
+                    "sheet_page": page_counts[region.sheet_name],
+                    "cell_range": region.cell_range,
+                    "image": image_path.name,
+                }
+            )
+        (staged_dir / "manifest.json").write_text(
+            json.dumps({"source_file": str(excel_path), "pages": entries}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        final_dir = output_root / "sheet_previews"
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        staged_dir.replace(final_dir)
+        logger.info("[Excel] %d gambar pembanding untuk %d sheet tersimpan.", len(entries), len(page_counts))
+        return entries
+    finally:
+        if staged_dir.exists():
+            shutil.rmtree(staged_dir)
+
+
 def _header_candidate_score(
     nonempty: list[ExcelCellEvidence],
     following: list[ExcelCellEvidence],
@@ -2479,6 +2594,29 @@ def _region_is_chart_source(region: ExcelRegion, source_ranges: set[str]) -> boo
     return covered / len(populated) >= 0.5
 
 
+def _combine_markdown_table_tiles(regions: list[ExcelRegion]) -> list[ExcelRegion]:
+    """Render each tiled native table as one logical Markdown table."""
+    tile_groups: dict[str, list[ExcelRegion]] = {}
+    for region in regions:
+        if region.kind == "table" and region.parent_region_id:
+            tile_groups.setdefault(region.parent_region_id, []).append(region)
+    if not tile_groups:
+        return regions
+
+    combined: list[ExcelRegion] = []
+    emitted_parents: set[str] = set()
+    for region in regions:
+        parent_id = region.parent_region_id
+        if region.kind == "table" and parent_id in tile_groups:
+            if parent_id in emitted_parents:
+                continue
+            combined.append(_combine_tile_regions(tile_groups[parent_id]))
+            emitted_parents.add(parent_id)
+        else:
+            combined.append(region)
+    return combined
+
+
 def _sheet_markdown(
     sheet: ExcelSheetSurvey,
     *,
@@ -2524,7 +2662,7 @@ def _sheet_markdown(
             "Sheet pendukung dipertahankan dalam manifest untuk audit formula. "
             f"Sumber yang dirujuk: {dependencies}."
         )
-        for region in sheet.regions:
+        for region in _combine_markdown_table_tiles(list(sheet.regions)):
             if region.kind != "table" or not region.persist_native:
                 continue
             rendered = _region_markdown(region)
@@ -2546,7 +2684,7 @@ def _sheet_markdown(
         )
         if cell_range and _reference_sheet_name(reference) == sheet.name
     }
-    for region in sheet.regions:
+    for region in _combine_markdown_table_tiles(list(sheet.regions)):
         if region.kind == "mixed":
             continue
         if sheet.role == "dashboard" and _region_is_chart_source(
@@ -3233,6 +3371,10 @@ def process_multipage_excel(
                 json.dumps(survey.model_dump(mode="json"), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            try:
+                render_excel_sheet_previews(path_obj, survey, output_root, temporary_root)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Excel] Gambar pembanding per sheet gagal: %s", exc)
 
             if db_path:
                 native_db_path = Path(db_path).resolve()
