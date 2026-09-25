@@ -1,0 +1,45 @@
+app/schemas.py
+  s_2f7adb793b19b3::t_a498839bb3f202 817,830,834,845
+app/agent_graph.py
+  s_2f7adb793b19b3::t_a498839bb3f202 123,125-126
+app/diagram.py
+  s_2f7adb793b19b3::t_a498839bb3f202 6,49-61,295-323,512-513,523-535,544,561,571-579,590,621-626,633,649,651-652,702-742,744-753,756,829-835,917-918,1033,1050-1053,1062,1085,1090,1092
+  s_2f7adb793b19b3::t_b283a52458e57b 500-503
+tests/test_agent_orchestrator.py
+  s_2f7adb793b19b3::t_a498839bb3f202 6-8,14,80-97,116-129,137,149,162-197
+  s_2f7adb793b19b3::t_fb3b0e55eb16fa 198
+tests/test_config_ocr.py
+  s_2f7adb793b19b3::t_b790630a270339 23
+app/extractor.py
+  s_2f7adb793b19b3::t_a498839bb3f202 263-266,352,465-467
+app/prompts.py
+  s_2f7adb793b19b3::t_a498839bb3f202 36-39,47-48,73,129
+app/graph.py
+  s_2f7adb793b19b3::t_a498839bb3f202 68,93-107,587,605,626,635-639,657-663,666,693-700,779-783,792-796,806,818-821
+tests/test_diagram.py
+  s_2f7adb793b19b3::t_a498839bb3f202 21,163-167,169,188-205,234,254-258,260,262-266,268-269,271-317,330,414-422
+tests/test_excel_regions.py
+  s_2f7adb793b19b3::t_b790630a270339 535
+README.md
+  s_2f7adb793b19b3::t_a498839bb3f202 76,157,160-161,214,230-231
+app/deep_agent.py
+  s_2f7adb793b19b3::t_a498839bb3f202 131,145,351-353,430
+app/mcp_server.py
+  s_2f7adb793b19b3::t_a498839bb3f202 276,304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a8b05570a72eac45f0f5ed90ac56a55dde139be2",
+  "prompts": {},
+  "sessions": {
+    "s_2f7adb793b19b3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c743-7450-7612-86fe-b95c49ccfb77",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "daruoktab <daruokta@gmail.com>"
+    }
+  }
+}
