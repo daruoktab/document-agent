@@ -127,6 +127,50 @@ class TestPaddleOCRVLExtractor(unittest.TestCase):
             self.assertEqual(result.status, "error")
             self.assertEqual(result.decision, "error")
 
+    def test_image_placeholders_are_removed_without_losing_visual_regions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "page.png"
+            image = Image.new("RGB", (400, 300), "white")
+            ImageDraw.Draw(image).rectangle((20, 20, 350, 150), fill="black")
+            image.save(image_path)
+            payload = {
+                "parsing_res_list": [
+                    {
+                        "block_label": "image",
+                        "block_content": "",
+                        "block_bbox": [20, 20, 350, 150],
+                    }
+                ]
+            }
+            markdown = (
+                '## Perangkat\n\n<div style="text-align: center;">'
+                '<img src="imgs/img_in_image_box_20_20_350_150.jpg" alt="Image" />'
+                "</div>\n\n7210 SAS-Sx 10/100GE\n\n"
+                "![Image](imgs/another_placeholder.jpg)\n\n"
+                "> **[Diagram/Visual]:** Panel depan perangkat Nokia."
+            )
+            extractor = PaddleOCRVLExtractor(
+                base_url="http://127.0.0.1:8081/v1",
+                model_name="paddleocr-vl-1.6",
+                pipeline=_FakePaddlePipeline(_FakePaddleResult(payload, markdown)),
+                rotation_retry=False,
+            )
+
+            result = extractor.extract_robust(
+                image_path, output_dir=root / "regions"
+            )
+
+            self.assertEqual(result.status, "success")
+            self.assertEqual(
+                result.markdown,
+                "## Perangkat\n\n7210 SAS-Sx 10/100GE\n\n"
+                "> **[Diagram/Visual]:** Panel depan perangkat Nokia.",
+            )
+            self.assertTrue(Path(result.regions[0].crop_path or "").is_file())
+            manifest = json.loads((root / "regions" / "manifest.json").read_text("utf-8"))
+            self.assertEqual(manifest["source_markdown"], result.markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

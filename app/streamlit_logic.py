@@ -1569,19 +1569,20 @@ def build_all_tables_csv_zip(conn: sqlite3.Connection, tables: list[str]) -> byt
 
 def render_mermaid_html(mermaid_code: str, height: int = 420) -> None:
     """Render diagram Mermaid interaktif dalam format SVG menggunakan Mermaid.js CDN."""
+    # Kode diagram harus masuk sebagai string JavaScript. Jika ditaruh sebagai isi
+    # elemen HTML, browser mengubah panah --> menjadi --&gt; sebelum Mermaid membacanya.
+    diagram_source = (
+        json.dumps(mermaid_code, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
     html_code = f"""
     <!DOCTYPE html>
     <html lang="id">
     <head>
       <meta charset="utf-8">
       <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-      <script>
-        mermaid.initialize({{
-          startOnLoad: true,
-          theme: 'default',
-          securityLevel: 'loose'
-        }});
-      </script>
       <style>
         body {{
           margin: 0;
@@ -1601,9 +1602,24 @@ def render_mermaid_html(mermaid_code: str, height: int = 420) -> None:
       </style>
     </head>
     <body>
-      <div class="mermaid">
-{mermaid_code}
-      </div>
+      <div id="mermaid-diagram" class="mermaid"></div>
+      <script>
+        const diagramSource = {diagram_source};
+        const target = document.getElementById('mermaid-diagram');
+        mermaid.initialize({{
+          startOnLoad: false,
+          theme: 'default',
+          securityLevel: 'loose'
+        }});
+        mermaid.render('mermaid-svg', diagramSource)
+          .then(({{ svg, bindFunctions }}) => {{
+            target.innerHTML = svg;
+            if (bindFunctions) bindFunctions(target);
+          }})
+          .catch((error) => {{
+            target.textContent = `Diagram Mermaid tidak dapat ditampilkan: ${{error.message || error}}`;
+          }});
+      </script>
     </body>
     </html>
     """

@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from PIL import Image
 
+from .multi_page import strip_embedded_image_markup
 from .ocr import _image_signals, assess_ocr_quality
 from .preprocess import rotate_image_right_angle
 from .schemas import OCRExtractionResult, OCRRegion
@@ -216,6 +217,7 @@ class PaddleOCRVLExtractor:
             ).strip()
             if not markdown:
                 raise ValueError("Markdown PaddleOCR-VL kosong.")
+            markdown = strip_embedded_image_markup(markdown)
             regions = parse_paddle_regions(payload, image_size=image_size)
             raw_response = json.dumps(payload, ensure_ascii=False, default=str)
             quality = assess_ocr_quality(

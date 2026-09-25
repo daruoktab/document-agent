@@ -15,6 +15,17 @@ import re
 from typing import Any
 
 
+def strip_embedded_image_markup(markdown: str) -> str:
+    """Remove embedded image references; visual descriptions remain as text."""
+    if not markdown:
+        return markdown
+    image_only_div = r"<div\b[^>]*>\s*<img\b[^>]*>\s*</div\s*>"
+    cleaned = re.sub(image_only_div, "", markdown, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<img\b[^>]*>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"!\[[^\]\n]*\]\([^\n)]*\)", "", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 def _clean_page_artifacts(markdown: str) -> str:
     """Bersihkan artefak header/footer halaman umum."""
     lines = markdown.splitlines()

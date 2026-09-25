@@ -5,10 +5,13 @@ Unit tests untuk helper UI Streamlit: pemecahan halaman Markdown, ekstraksi diag
 from __future__ import annotations
 
 import base64
+import json
+import re
 import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from app.streamlit_logic import (
@@ -21,6 +24,7 @@ from app.streamlit_logic import (
     format_timestamp,
     get_document_images,
     read_completed_markdown_pages,
+    render_mermaid_html,
     split_markdown_by_pages,
 )
 
@@ -42,6 +46,19 @@ class TestStreamlitHelpers(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_mermaid_renderer_passes_code_as_javascript_string(self) -> None:
+        code = 'flowchart LR\nA --> B["Data primer:<br/>lokasi"]'
+        with patch("app.streamlit_logic.st.components.v1.html") as component:
+            render_mermaid_html(code)
+
+        page = component.call_args.args[0]
+        source = re.search(r"const diagramSource = (.*);", page)
+        self.assertIsNotNone(source)
+        self.assertEqual(json.loads(source.group(1)), code)
+        self.assertIn("mermaid.render('mermaid-svg', diagramSource)", page)
+        self.assertNotIn("--&gt;", page)
+        self.assertNotIn("<br/>", page)
 
     def test_format_timestamp_handles_iso_and_missing_values(self) -> None:
         self.assertEqual(format_timestamp(None), "—")

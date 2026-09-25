@@ -23,6 +23,7 @@ from .multi_page import (
     extract_document_title,
     format_page_delimiter,
     stitch_pages_to_markdown,
+    strip_embedded_image_markup,
     strip_page_markers,
 )
 from .prompts import normalize_specs
@@ -503,6 +504,7 @@ def process_multipage_pdf(
 
             page_md: str = strip_page_markers(res["markdown_content"]).strip()
             page_md = sanitize_markdown_tables(page_md)
+            page_md = strip_embedded_image_markup(page_md)
 
             # Mekanisme Judul Dokumen (diekstraksi sekali, utamanya pada halaman 1)
             if idx == 1:
