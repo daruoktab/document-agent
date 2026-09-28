@@ -548,19 +548,18 @@ def render_history_workspace(
                             f"Diunggah {format_timestamp(batch.get('uploaded_at', batch.get('created_at')))}"
                         )
                     with open_col:
-                        if st.button(
-                            "Buka batch",
-                            key=f"history_batch_{batch['id']}",
-                            use_container_width=True,
-                        ):
-                            st.session_state["selected_batch_id"] = batch["id"]
-                            st.session_state["selected_stem"] = (
-                                batch["documents"][0]["stem"]
-                                if batch.get("documents")
-                                else None
+                        st.html(
+                            _workspace_open_link(
+                                "Histori",
+                                "Buka batch",
+                                batch=batch["id"],
+                                file=(
+                                    batch["documents"][0]["stem"]
+                                    if batch.get("documents")
+                                    else None
+                                ),
                             )
-                            st.session_state["scroll_to_top_after_navigation"] = True
-                            st.rerun()
+                        )
                     with delete_col:
                         if st.button(
                             "Hapus",
@@ -599,7 +598,7 @@ def render_upload_workspace(
             key="document_directory_uploader",
             help=(
                 "File dengan format yang didukung di dalam folder, termasuk subfolder, "
-                "akan ditambahkan ke antrean."
+                "akan ditambahkan ke antrean. Struktur folder tidak disimpan."
             ),
         )
 
@@ -1076,8 +1075,8 @@ def _save_uploaded_files(
     seen_uploads: set[tuple[str, str]] = set()
     for uploaded_file in uploaded_files:
         content = uploaded_file.getvalue()
-        normalized_name = Path(uploaded_file.name.replace("\\", "/")).name
-        fingerprint = (normalized_name, hashlib.sha256(content).hexdigest())
+        relative_name = uploaded_file.name.replace("\\", "/")
+        fingerprint = (relative_name, hashlib.sha256(content).hexdigest())
         if fingerprint in seen_uploads:
             continue
         seen_uploads.add(fingerprint)
@@ -1091,7 +1090,7 @@ def _save_staged_uploaded_files(
     """Save one upload selection once, even when Streamlit reruns the page."""
     signature = tuple(
         (
-            Path(uploaded_file.name.replace("\\", "/")).name,
+            uploaded_file.name.replace("\\", "/"),
             hashlib.sha256(uploaded_file.getvalue()).hexdigest(),
         )
         for uploaded_file in uploaded_files

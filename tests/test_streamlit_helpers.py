@@ -18,6 +18,7 @@ from app.streamlit_logic import (
     WORKSPACE_PAGES,
     _load_brand_assets,
     _save_uploaded_file,
+    _save_uploaded_files,
     build_document_zip,
     extract_mermaid_blocks,
     find_pages_containing,
@@ -190,6 +191,19 @@ class TestStreamlitHelpers(unittest.TestCase):
         self.assertEqual(first.name, "laporan.pdf")
         self.assertEqual(second.name, "laporan (1).docx")
         self.assertNotEqual(first.stem, second.stem)
+
+    def test_upload_folder_keeps_same_file_from_different_subfolders(self) -> None:
+        saved = _save_uploaded_files(
+            [
+                _UploadedFile("folder/a/laporan.pdf", b"same-content"),
+                _UploadedFile("folder/b/laporan.pdf", b"same-content"),
+                _UploadedFile("folder/a/laporan.pdf", b"same-content"),
+            ],
+            self.temp_dir,
+        )
+
+        self.assertEqual([path.name for path in saved], ["laporan.pdf", "laporan (1).pdf"])
+        self.assertTrue(all(path.read_bytes() == b"same-content" for path in saved))
 
 
 if __name__ == "__main__":

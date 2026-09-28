@@ -52,7 +52,12 @@ with patch.object(ui.JobManager, 'get_instance', return_value=manager):
         app.button(key="history_back_to_list").click().run()
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(any(x.key == "batch_search" for x in app.text_input))
-        app.button(key="history_batch_batch1").click().run()
+        batch_links = [element.proto.body for element in app.get("html")]
+        self.assertTrue(
+            any('view=Histori&amp;batch=batch1' in link for link in batch_links)
+        )
+        app.session_state["selected_batch_id"] = "batch1"
+        app.run()
         app.button(key="batch_open_sample").click().run()
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(app.session_state["workspace_page"], "Dokumen")
@@ -88,6 +93,27 @@ with patch.object(ui.JobManager, 'get_instance', return_value=manager), \\
         app.checkbox(key="show_diagram_sample").check().run()
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(app.session_state["diagram_calls"], 1)
+
+    def test_scrollable_batch_history_has_a_link_for_each_batch(self) -> None:
+        script = self.script_header() + """
+batches = [
+    {
+        'id': f'batch{index}', 'name': f'Batch {index}',
+        'created_at': '2026-09-23T00:00:00Z',
+        'documents': [{'stem': 'sample', 'source_name': 'sample.pdf'}],
+    }
+    for index in range(5)
+]
+ui.render_history_workspace([], batches, manager, output)
+"""
+        app = AppTest.from_string(script, default_timeout=20).run()
+
+        self.assertEqual(len(app.exception), 0)
+        links = [element.proto.body for element in app.get("html")]
+        for index in range(5):
+            self.assertTrue(
+                any(f'view=Histori&amp;batch=batch{index}' in link for link in links)
+            )
 
 
 if __name__ == "__main__":
