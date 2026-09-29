@@ -3,7 +3,8 @@ Pembangun model chat (`ChatOpenAI`) untuk endpoint OpenAI-compatible.
 
 Menyediakan:
   - build_chat_model(base_url, model, api_key, ...) : builder generik
-  - build_vlm(settings)  : VLM utama (reasoning + agent + quality gate)
+  - build_vlm(settings)  : vlm-vision-focus untuk pembacaan dan audit gambar
+  - build_language_vlm(settings) : vlm-agent-focus untuk penalaran dan penyusunan teks
   - build_ocr(settings)  : model OCR terstruktur
   - get_vlm(settings)    : Helper singleton / factory untuk VLM
   - encode_image, encode_image_to_base64, image_data_uri : utility encoding citra
@@ -34,9 +35,10 @@ response_logger = logging.getLogger("app.llm.response")
 class LoggingCallbackHandler(BaseCallbackHandler):
     """Callback handler transparan untuk mencatat setiap request & response LLM/VLM."""
 
-    def __init__(self, model_name: str, base_url: str) -> None:
+    def __init__(self, model_name: str, base_url: str, role: str = "unspecified") -> None:
         self.model_name = model_name
         self.base_url = base_url
+        self.role = role
         self._start_time: float = 0.0
 
     def on_llm_start(
@@ -44,7 +46,8 @@ class LoggingCallbackHandler(BaseCallbackHandler):
     ) -> None:
         self._start_time = time.perf_counter()
         logger.info(
-            "--> [LLM Request] Model: %s | URL: %s | Prompts: %d item",
+            "--> [LLM Request] Role: %s | Model: %s | URL: %s | Prompts: %d item",
+            self.role,
             self.model_name,
             self.base_url,
             len(prompts),
@@ -57,7 +60,8 @@ class LoggingCallbackHandler(BaseCallbackHandler):
         elapsed = time.perf_counter() - self._start_time
         gen_count = sum(len(g) for g in response.generations)
         logger.info(
-            "<-- [LLM Response] Model: %s | Waktu: %.2fs | Generasi: %d item",
+            "<-- [LLM Response] Role: %s | Model: %s | Waktu: %.2fs | Generasi: %d item",
+            self.role,
             self.model_name,
             elapsed,
             gen_count,
@@ -77,8 +81,9 @@ class LoggingCallbackHandler(BaseCallbackHandler):
                     "response_metadata": getattr(message, "response_metadata", {}),
                 }
                 response_logger.info(
-                    "[LLM Response Raw] model=%s candidate=%d.%d chars=%d "
+                    "[LLM Response Raw] role=%s model=%s candidate=%d.%d chars=%d "
                     "generation_info=%r metadata=%r\n--- BEGIN RESPONSE ---\n%s\n--- END RESPONSE ---",
+                    self.role,
                     self.model_name,
                     index,
                     candidate_index,
@@ -153,7 +158,7 @@ def build_chat_model(
 
 
 def build_vlm(settings: Settings | None = None) -> ChatOpenAI:
-    """VLM normal (ekstraksi + agent), dengan enable_thinking dari config."""
+    """vlm-vision-focus, dengan enable_thinking dari config."""
     resolved = settings or get_settings()
     return build_chat_model(
         base_url=resolved.vlm_base_url,
@@ -163,7 +168,32 @@ def build_vlm(settings: Settings | None = None) -> ChatOpenAI:
         timeout=resolved.vlm_timeout,
         max_tokens=resolved.vlm_max_tokens,
         enable_thinking=resolved.vlm_enable_thinking,
-        callbacks=[LoggingCallbackHandler(resolved.vlm_model, resolved.vlm_base_url)],
+        callbacks=[LoggingCallbackHandler(resolved.vlm_model, resolved.vlm_base_url, "vlm-vision-focus")],
+    )
+
+
+def build_language_vlm(settings: Settings | None = None) -> ChatOpenAI:
+    """vlm-agent-focus opsional untuk tugas berbasis teks dan tool calling."""
+    resolved = settings or get_settings()
+    if not resolved.language_vlm_model:
+        raise ValueError("VLM_AGENT_FOCUS_MODEL belum dikonfigurasi.")
+    base_url = resolved.language_vlm_base_url or resolved.vlm_base_url
+    api_key = resolved.language_vlm_api_key or resolved.vlm_api_key
+    return build_chat_model(
+        base_url=base_url,
+        model=resolved.language_vlm_model,
+        api_key=api_key,
+        temperature=resolved.language_vlm_temperature,
+        timeout=resolved.language_vlm_timeout,
+        max_tokens=resolved.language_vlm_max_tokens,
+        enable_thinking=resolved.language_vlm_enable_thinking,
+        callbacks=[
+            LoggingCallbackHandler(
+                resolved.language_vlm_model,
+                base_url,
+                "vlm-agent-focus",
+            )
+        ],
     )
 
 
@@ -179,7 +209,7 @@ def build_ocr(settings: Settings | None = None) -> ChatOpenAI:
         temperature=resolved.ocr_temperature,
         timeout=resolved.ocr_timeout,
         max_tokens=resolved.ocr_max_tokens,
-        callbacks=[LoggingCallbackHandler(resolved.ocr_model, resolved.ocr_base_url)],
+        callbacks=[LoggingCallbackHandler(resolved.ocr_model, resolved.ocr_base_url, "ocr")],
     )
 
 

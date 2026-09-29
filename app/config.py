@@ -5,9 +5,10 @@ Menggunakan Pydantic-like dataclass `Settings` yang membaca environment variable
 dengan fallback yang aman untuk local inference (LM Studio / Ollama / llama-server).
 
 Peran Model:
-  1. VLM utama: klasifikasi, reasoning visual, specialist, dan quality gate
-  2. OCR       : PaddleOCR-VL untuk layout, Markdown, dan region crop
-  3. Logging   : konfigurasi level logging
+  1. vlm-vision-focus : pembacaan gambar dan pemeriksaan visual
+  2. vlm-agent-focus  : penalaran agent dan penyusunan teks setelah audit visual
+  3. OCR        : PaddleOCR-VL untuk layout, Markdown, dan region crop
+  4. Logging    : konfigurasi level logging
 """
 
 from __future__ import annotations
@@ -66,6 +67,24 @@ def _bool_env(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _float_env_first(names: tuple[str, ...], default: str) -> float:
+    try:
+        return float(_env_first(names, default))
+    except ValueError:
+        return float(default)
+
+
+def _int_env_first(names: tuple[str, ...], default: str) -> int:
+    try:
+        return int(_env_first(names, default))
+    except ValueError:
+        return int(default)
+
+
+def _bool_env_first(names: tuple[str, ...], default: str) -> bool:
+    return _env_first(names, default).lower() in ("1", "true", "yes", "on")
+
+
 def _load_local_dotenv() -> None:
     """Load project `.env` before settings are created.
 
@@ -104,49 +123,112 @@ class Settings:
     # --- Endpoint server llama.cpp ---
     base_url: str = field(
         default_factory=lambda: _env_first(
-            ("BASE_URL", "LLM_BASE_URL"), "http://127.0.0.1:8080/v1"
+            ("VLM_VISION_FOCUS_BASE_URL", "BASE_URL", "LLM_BASE_URL"),
+            "http://127.0.0.1:8080/v1",
         )
     )
 
     # Alias lama dipertahankan untuk kompatibilitas caller.
     llm_base_url: str = field(
         default_factory=lambda: _env_first(
-            ("BASE_URL", "LLM_BASE_URL"), "http://127.0.0.1:8080/v1"
+            ("VLM_VISION_FOCUS_BASE_URL", "BASE_URL", "LLM_BASE_URL"),
+            "http://127.0.0.1:8080/v1",
         )
     )
     llm_api_key: str = field(
         default_factory=lambda: _env_first(
-            ("API_KEY", "LLM_API_KEY"), "not-needed"
+            ("VLM_VISION_FOCUS_API_KEY", "API_KEY", "LLM_API_KEY"),
+            "not-needed",
         )
     )
 
-    # --- 1. VLM utama (reasoning + agent + quality gate) ---
+    # --- 1. vlm-vision-focus (Gemma) ---
     vlm_model: str = field(
-        default_factory=lambda: _env("VLM_MODEL", "gemma-4-12b-vlm")
+        default_factory=lambda: _env_first(
+            ("VLM_VISION_FOCUS_MODEL", "VLM_MODEL"), "gemma-4-12b-vlm"
+        )
     )
     vlm_base_url: str = field(
         default_factory=lambda: _env_first(
-            ("VLM_BASE_URL", "BASE_URL", "LLM_BASE_URL"),
+            ("VLM_VISION_FOCUS_BASE_URL", "VLM_BASE_URL", "BASE_URL", "LLM_BASE_URL"),
             "http://127.0.0.1:8080/v1",
         )
     )
     vlm_api_key: str = field(
         default_factory=lambda: _env_first(
-            ("VLM_API_KEY", "API_KEY", "LLM_API_KEY"), "not-needed"
+            ("VLM_VISION_FOCUS_API_KEY", "VLM_API_KEY", "API_KEY", "LLM_API_KEY"),
+            "not-needed",
         )
     )
     vlm_temperature: float = field(
-        default_factory=lambda: _float_env("VLM_TEMPERATURE", "0.1")
+        default_factory=lambda: _float_env_first(
+            ("VLM_VISION_FOCUS_TEMPERATURE", "VLM_TEMPERATURE"), "0.1"
+        )
     )
-    vlm_timeout: float = field(default_factory=lambda: _float_env("VLM_TIMEOUT", "300"))
+    vlm_timeout: float = field(
+        default_factory=lambda: _float_env_first(
+            ("VLM_VISION_FOCUS_TIMEOUT", "VLM_TIMEOUT"), "300"
+        )
+    )
     vlm_max_tokens: int = field(
-        default_factory=lambda: _int_env("VLM_MAX_TOKENS", "4096")
+        default_factory=lambda: _int_env_first(
+            ("VLM_VISION_FOCUS_MAX_TOKENS", "VLM_MAX_TOKENS"), "4096"
+        )
     )
     vlm_enable_thinking: bool = field(
-        default_factory=lambda: _bool_env("VLM_ENABLE_THINKING", "false")
+        default_factory=lambda: _bool_env_first(
+            ("VLM_VISION_FOCUS_ENABLE_THINKING", "VLM_ENABLE_THINKING"), "false"
+        )
     )
     vlm_visual_rescue: bool = field(
-        default_factory=lambda: _bool_env("VLM_VISUAL_RESCUE", "true")
+        default_factory=lambda: _bool_env_first(
+            ("VLM_VISION_FOCUS_VISUAL_RESCUE", "VLM_VISUAL_RESCUE"), "true"
+        )
+    )
+
+    # --- 2. vlm-agent-focus (opsional sampai model kedua disediakan) ---
+    language_vlm_model: str = field(
+        default_factory=lambda: _env_first(
+            ("VLM_AGENT_FOCUS_MODEL", "LANGUAGE_VLM_MODEL"), ""
+        )
+    )
+    language_vlm_base_url: str = field(
+        default_factory=lambda: _env_first(
+            ("VLM_AGENT_FOCUS_BASE_URL", "LANGUAGE_VLM_BASE_URL"), ""
+        )
+    )
+    language_vlm_api_key: str = field(
+        default_factory=lambda: _env_first(
+            ("VLM_AGENT_FOCUS_API_KEY", "LANGUAGE_VLM_API_KEY"), ""
+        )
+    )
+    language_vlm_temperature: float = field(
+        default_factory=lambda: _float_env_first(
+            ("VLM_AGENT_FOCUS_TEMPERATURE", "LANGUAGE_VLM_TEMPERATURE"), "0.1"
+        )
+    )
+    language_vlm_timeout: float = field(
+        default_factory=lambda: _float_env_first(
+            ("VLM_AGENT_FOCUS_TIMEOUT", "LANGUAGE_VLM_TIMEOUT"), "300"
+        )
+    )
+    language_vlm_max_tokens: int = field(
+        default_factory=lambda: _int_env_first(
+            ("VLM_AGENT_FOCUS_MAX_TOKENS", "LANGUAGE_VLM_MAX_TOKENS"), "4096"
+        )
+    )
+    language_vlm_enable_thinking: bool | None = field(
+        default_factory=lambda: (
+            _bool_env_first(
+                ("VLM_AGENT_FOCUS_ENABLE_THINKING", "LANGUAGE_VLM_ENABLE_THINKING"),
+                "false",
+            )
+            if _env_first(
+                ("VLM_AGENT_FOCUS_ENABLE_THINKING", "LANGUAGE_VLM_ENABLE_THINKING"),
+                "",
+            )
+            else None
+        )
     )
 
     # --- Spreadsheet hybrid extraction ---
@@ -181,7 +263,7 @@ class Settings:
         default_factory=lambda: _int_env("EXCEL_TILE_MAX_NATIVE_TOKENS", "1800")
     )
 
-    # --- 2. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
+    # --- 3. OCR terstruktur (aktif otomatis bila OCR_MODEL diisi) ---
     ocr_backend: str = field(
         default_factory=lambda: _env("OCR_BACKEND", "paddleocr_vl").strip().lower()
     )
@@ -231,7 +313,7 @@ class Settings:
         default_factory=lambda: _bool_env("TEXTREFLOW_ENABLED", "true")
     )
 
-    # --- 3. Logging Configuration ---
+    # --- 4. Logging Configuration ---
     log_level: str = field(
         default_factory=lambda: _env("LOG_LEVEL", "INFO").strip().upper() or "INFO"
     )

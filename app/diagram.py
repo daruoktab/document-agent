@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -688,6 +688,7 @@ def extract_diagram_to_mermaid(
     llm: BaseChatModel,
     *,
     forced_diagram_type: str | None = None,
+    language_llm: BaseChatModel | None = None,
 ) -> DiagramExtractionResult:
     """
     Ekstrak citra diagram menjadi kode Mermaid.js terstruktur yang siap dirender,
@@ -698,6 +699,23 @@ def extract_diagram_to_mermaid(
         raise FileNotFoundError(f"File citra tidak ditemukan: {path_obj}")
 
     image_uri = image_data_uri(path_obj)
+
+    def request_code_repair(prompt: str) -> Any:
+        # Pesan compiler dan kode cukup untuk perbaikan sintaks. Jika model
+        # bahasa belum diatur, pertahankan alur visual lama secara persis.
+        if language_llm is not None:
+            return language_llm.invoke(prompt)
+        return llm.invoke(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_uri}},
+                    ],
+                }
+            ]
+        )
 
     # 1. Evaluasi selalu dijalankan. Hint inspeksi tidak boleh melewati gerbang
     # kebijakan karena label awal dapat berasal dari crop figure non-flowchart.
@@ -871,20 +889,7 @@ def extract_diagram_to_mermaid(
                         "8. Outputkan HANYA blok kode ```mermaid\\n...\\n``` yang sudah diperbaiki tanpa teks tambahan."
                     )
                     try:
-                        fix_resp = llm.invoke(
-                            [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": fix_prompt},
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {"url": image_uri},
-                                        },
-                                    ],
-                                }
-                            ]
-                        )
+                        fix_resp = request_code_repair(fix_prompt)
                         fix_text = strip_thinking_process(str(fix_resp.content).strip())
                         m_fix = re.search(
                             r"```(?:mermaid)?\s*([\s\S]*?)\s*```",
@@ -900,6 +905,11 @@ def extract_diagram_to_mermaid(
                             "[Diagram:Extract] Gagal melakukan retry self-correction Mermaid: %s",
                             e_fix,
                         )
+                        mermaid_block = None
+                        summary_text = (
+                            "Flowchart terdeteksi, tetapi kode Mermaid tidak lolos validasi. "
+                            f"{convertibility.reasoning}"
+                        ).strip()
                         break
                 else:
                     mermaid_block = None
@@ -935,20 +945,7 @@ def extract_diagram_to_mermaid(
                         "3. Berikan HANYA blok kode ```mermaid\\n...\\n``` yang sudah diperbaiki."
                     )
                     try:
-                        fix_resp = llm.invoke(
-                            [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": fix_cli_prompt},
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {"url": image_uri},
-                                        },
-                                    ],
-                                }
-                            ]
-                        )
+                        fix_resp = request_code_repair(fix_cli_prompt)
                         fix_text = strip_thinking_process(str(fix_resp.content).strip())
                         m_fix = re.search(
                             r"```(?:mermaid)?\s*([\s\S]*?)\s*```",
@@ -964,6 +961,11 @@ def extract_diagram_to_mermaid(
                             "[Diagram:Extract] Gagal melakukan retry compiler CLI: %s",
                             e_cli_fix,
                         )
+                        mermaid_block = None
+                        summary_text = (
+                            "Flowchart terdeteksi, tetapi kode Mermaid tidak lolos kompilasi. "
+                            f"{convertibility.reasoning}"
+                        ).strip()
                         break
                 else:
                     logger.error(

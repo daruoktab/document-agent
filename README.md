@@ -1,9 +1,9 @@
 # document-agent — OCR + Vision VLM Document Extractor
 
-Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Pipeline resmi PaddleOCR-VL membuat draft dan region layout melalui recognizer GGUF, TextReflow memperbaiki prosa satu/dua kolom yang memenuhi guard, sedangkan Gemma 4 12B menangani klasifikasi, reasoning, koreksi adaptif, tabel SQLite, dan ekstraksi diagram **Mermaid.js**.
+Sistem ekstraksi **dokumen internal perusahaan** (PDF, DOC/DOCX, Excel, PPT/PPTX, Scan Gambar, Screenshot Chat, Form Persetujuan) menjadi **Markdown bersih dan terstruktur**. Pipeline resmi PaddleOCR-VL membuat draft dan region layout melalui recognizer GGUF. `vlm-vision-focus` (Gemma 4 12B) membaca serta mengaudit gambar; `vlm-agent-focus` opsional menyusun Markdown hasil audit, membantu perbaikan kode Mermaid, dan menjalankan penalaran Deep Agent.
 
 > ℹ️ **Catatan Arsitektur:**
-> Pipeline memakai dua server llama.cpp: Gemma pada port 8080 dan recognizer PaddleOCR-VL GGUF pada port 8081. Layout analyzer PaddleOCR berjalan di proses aplikasi. Jika `OCR_MODEL` kosong atau OCR gagal, ekstraksi otomatis fallback ke Gemma. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
+> Pipeline memakai Gemma pada port 8080 dan recognizer PaddleOCR-VL GGUF pada port 8081. `vlm-agent-focus` dapat disajikan melalui endpoint OpenAI-compatible lain. Layout analyzer PaddleOCR berjalan di proses aplikasi. Jika `OCR_MODEL` kosong atau OCR gagal, ekstraksi otomatis fallback ke Gemma. Modul RAG staging tetap terpisah di `app/rag_staging.py`.
 
 ---
 
@@ -43,16 +43,33 @@ npm install -g @mermaid-js/mermaid-cli puppeteer
 npx puppeteer browsers install chrome-headless-shell
 ```
 
+Untuk menjalankan seluruh tes lokal tanpa koneksi ke API model:
+
+```bash
+uv pip install -e ".[test]"
+python tests/run_tests.py
+```
+
 ### 3. Konfigurasi Environment Variable (`.env`)
 Buat berkas `.env` di direktori utama repositori. Model OCR sengaja boleh dikosongkan sampai alias di server siap:
 
 ```env
-BASE_URL=http://127.0.0.1:8080/v1
-VLM_MODEL=gemma-4-12b-vlm
-VLM_ENABLE_THINKING=false
-VLM_VISUAL_RESCUE=true
-VLM_TEMPERATURE=0.1
-VLM_TIMEOUT=300
+VLM_VISION_FOCUS_BASE_URL=http://127.0.0.1:8080/v1
+VLM_VISION_FOCUS_API_KEY=not-needed
+VLM_VISION_FOCUS_MODEL=gemma-4-12b-vlm
+VLM_VISION_FOCUS_ENABLE_THINKING=false
+VLM_VISION_FOCUS_VISUAL_RESCUE=true
+VLM_VISION_FOCUS_TEMPERATURE=0.1
+VLM_VISION_FOCUS_TIMEOUT=300
+VLM_VISION_FOCUS_MAX_TOKENS=2048
+
+VLM_AGENT_FOCUS_MODEL=
+VLM_AGENT_FOCUS_BASE_URL=
+VLM_AGENT_FOCUS_API_KEY=
+VLM_AGENT_FOCUS_TEMPERATURE=0.1
+VLM_AGENT_FOCUS_TIMEOUT=300
+VLM_AGENT_FOCUS_MAX_TOKENS=2048
+VLM_AGENT_FOCUS_ENABLE_THINKING=false
 
 OCR_BASE_URL=http://127.0.0.1:8081/v1
 OCR_BACKEND=paddleocr_vl
@@ -74,6 +91,8 @@ EXCEL_SMALL_FONT_POINTS=8
 ```
 
 Ketika `OCR_MODEL` diisi, pipeline resmi PaddleOCR-VL menjalankan layout analysis lokal dan mengirim crop elemen ke recognizer GGUF. Hasilnya menjadi draft utama hanya setelah lolos quality gate. TextReflow diterapkan otomatis pada halaman prosa satu/dua kolom yang tidak mengandung tabel, formula, atau figure; halaman lain mempertahankan Markdown Paddle. Pipeline membandingkan hasil dengan text-layer PDF, mencoba rotasi alternatif pada kandidat berisiko, dan memakai Gemma secara independen saat trust OCR rendah. Crop `table` dan `figure` disimpan ke `output/{dokumen}/regions/...`; crop figure dikirim ke spesialis visual untuk dipilah menjadi Mermaid flowchart atau deskripsi terstruktur. `OCR_MODEL=` tetap aman karena mengaktifkan fallback Gemma.
+
+Jika `VLM_AGENT_FOCUS_MODEL` diisi, Gemma tetap melakukan inspeksi, pembacaan, dan audit gambar. `vlm-agent-focus` menerima draft serta hasil audit sebagai teks tanpa gambar, lalu menyusun Markdown akhir. Perubahan tabel, angka, atau blok Mermaid ditolak dan hasil audit Gemma dipakai. Model ini juga dipakai untuk perbaikan sintaks Mermaid berbasis pesan compiler, refleksi teks tabel, dan penalaran master/subagent Deep Agent. `VLM_AGENT_FOCUS_BASE_URL` serta `VLM_AGENT_FOCUS_API_KEY` boleh kosong bila kedua model berada di endpoint yang sama; tanpa model kedua, alur lama tetap berlaku. Deep Agent memerlukan dukungan tool calling pada model agent.
 
 Untuk Excel, pipeline menyurvei isi, formula, relasi antarsheet, grafik, merge, style, dan blok tabel sebelum rendering. Peran sheet ditentukan dari pola isinya—dashboard dirender sebagai konteks visual, ringkasan dibentuk dari nilai native, data detail dilampirkan lengkap melalui SQLite/CSV, dan sheet formula pendukung tetap tercatat untuk audit. Grafik native diubah menjadi narasi serta tabel Markdown; font kecil atau teks miring tetap dapat memicu pembacaan VLM adaptif.
 
@@ -203,18 +222,20 @@ Sistem kini dilengkapi modul cerdas ([`app/tabular_db.py`](app/tabular_db.py)):
 
 ## 🤖 Arsitektur Sub-Agent (Deep Agents Harness — via MCP)
 
-Proyek ini dilengkapi dengan **Master Agent dan 6 Sub-Agent Spesialis** ([app/deep_agent.py](app/deep_agent.py)) berbasis Vision Language Model murni. Deep Agent tersedia via **MCP Server** untuk use case conversational (instruksi bebas, query SQLite interaktif) — bukan via CLI, karena pipeline default CLI sudah mencakup seluruh kemampuan ekstraksi secara lebih cepat dan deterministik.
+Proyek ini dilengkapi dengan **Master Agent dan 8 Sub-Agent Spesialis** ([app/deep_agent.py](app/deep_agent.py)). Master dan subagent memakai `vlm-agent-focus` jika dikonfigurasi; tool visual memakai `vlm-vision-focus`. Deep Agent tersedia via **MCP Server** untuk use case conversational (instruksi bebas, query SQLite interaktif) — bukan via CLI, karena pipeline default CLI sudah mencakup seluruh kemampuan ekstraksi secara lebih cepat dan deterministik.
 
 Semua tool Deep Agent terintegrasi dengan konfigurasi caller: `db_path` dan `output_markdown_path` di-bake ke dalam tool, sehingga hasil ekstraksi menulis ke path yang ditentukan.
 
 | Nama Sub-Agent | Peran & Spesialisasi | Tool Utama |
 |:---|:---|:---|
 | `layout-classifier` | Deteksi multi-trait tata letak dokumen (kolom, hierarki, slide, tabel) | `classify_layout` |
-| `markdown-extractor` | Ekstraksi gambar multimodal ke Markdown bersih berbasis spesifikasi komposit via VLM | `extract_to_markdown` |
+| `ocr-markdown-extractor` | Ekstraksi OCR primer dengan fallback pembacaan visual Gemma | `extract_to_markdown` |
 | `diagram-mermaid-specialist` | Ekstraksi keluarga flowchart ke Mermaid dan deskripsi terstruktur untuk visual lainnya | `classify_diagram_suitability`, `extract_diagram_to_mermaid` |
 | `presentation-specialist` | Ekstraksi slide PowerPoint (.pptx/.ppt): render gambar per slide, lalu dibaca VLM menjadi Markdown | `extract_presentation_pptx` |
 | `pdf-orchestrator` | Orkestrasi pemrosesan PDF multi-halaman & penyambungan kontinuitas heading | `extract_pdf_document` |
-| `tabular-db-specialist` | Deteksi tabel transaksional, simpan ke SQLite, verifikasi ganda, & eksekusi query SQL | `classify_table_storage`, `ingest_table_to_sqlite`, `verify_sqlite_table`, `query_tabular_database` |
+| `docx-orchestrator` | Konversi Word dan ekstraksi visual per halaman | `extract_docx_document` |
+| `excel-orchestrator` | Survei workbook native dan pembacaan region visual | `extract_excel_document` |
+| `tabular-db-specialist` | Deteksi tabel transaksional, simpan ke SQLite, verifikasi ganda, & eksekusi query SQL | `classify_table_storage`, `ingest_tables_to_sqlite`, `verify_table_data_integrity`, `query_sqlite_database` |
 
 ---
 
@@ -243,8 +264,8 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
       "command": "python",
       "args": ["-m", "app.mcp_server"],
       "env": {
-        "BASE_URL": "http://127.0.0.1:8080/v1",
-        "VLM_MODEL": "gemma-4-12b-vlm",
+        "VLM_VISION_FOCUS_BASE_URL": "http://127.0.0.1:8080/v1",
+        "VLM_VISION_FOCUS_MODEL": "gemma-4-12b-vlm",
         "OCR_BASE_URL": "http://127.0.0.1:8081/v1",
         "OCR_BACKEND": "paddleocr_vl",
         "OCR_MODEL": "paddleocr-vl-1.6"
@@ -254,7 +275,7 @@ Server MCP berbasis **MCP Python SDK** (`mcp>=1.0.0`; [app/mcp_server.py](app/mc
 }
 ```
 
-> Kedua endpoint memakai API OpenAI-compatible. `BASE_URL` khusus VLM utama; `OCR_BASE_URL` khusus proses OCR.
+> Endpoint model memakai API OpenAI-compatible. `VLM_VISION_FOCUS_BASE_URL` khusus `vlm-vision-focus`; `VLM_AGENT_FOCUS_BASE_URL` dapat diarahkan ke server model kedua; `OCR_BASE_URL` khusus proses OCR.
 
 ---
 

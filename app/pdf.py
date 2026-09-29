@@ -561,7 +561,9 @@ def process_multipage_pdf(
                     table_name_prefix=record_stem,
                     append_if_matching=True,
                     force_all_tables=force_all_tables,
-                    llm=llm or getattr(pipeline, "vlm", None),
+                    llm=llm
+                    or getattr(pipeline, "language_vlm", None)
+                    or getattr(pipeline, "vlm", None),
                 )
                 tabular_events.append(tab_event)
                 if tab_event.tagged_markdown:

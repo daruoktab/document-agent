@@ -35,6 +35,9 @@ dependencies = [
     "textreflow>=1.0.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 

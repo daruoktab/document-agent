@@ -31,7 +31,7 @@ python -m app.learning_cli rollback
 ```
 
 `probe` mengirim satu gambar buatan bertuliskan BUKU 100 untuk memeriksa kompatibilitas endpoint.
-`optimize` memakai pengaturan `VLM_*` yang sama dengan aplikasi, termasuk URL, model, kunci API, dan pengaturan thinking.
+`optimize` memakai pengaturan `VLM_VISION_FOCUS_*` yang sama dengan aplikasi, termasuk URL, model, kunci API, dan pengaturan thinking.
 Data gambar dan koreksi terpilih dikirim ke endpoint tersebut saat optimasi, termasuk untuk refleksi multimodal.
 Proses berjalan di terminal; tutup terminal atau interupsi untuk menghentikannya. Percobaan yang terputus paksa dapat tetap bertanda `running`, tetapi tidak bisa diterapkan.
 

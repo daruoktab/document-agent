@@ -151,8 +151,12 @@ Diagram alur komponen sistem."""
             resp_judge,
         ]
 
-        pipeline = DocumentExtractionPipeline(vlm=mock_llm)
-        result = pipeline.run(str(self.img_file))
+        with patch(
+            "app.diagram.render_mermaid_to_png",
+            return_value=(True, b"\x89PNG\r\n\x1a\nrendered", None),
+        ):
+            pipeline = DocumentExtractionPipeline(vlm=mock_llm)
+            result = pipeline.run(str(self.img_file))
 
         self.assertTrue(result["has_diagram"])
         self.assertIn("```mermaid", result["markdown_content"])

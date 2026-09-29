@@ -396,7 +396,11 @@ def test_extract_diagram_self_correction_retry(tmp_path):
 
     mock_llm.invoke.side_effect = [resp_classify, resp_extract_broken, resp_extract_fixed]
 
-    res = extract_diagram_to_mermaid(img_file, mock_llm)
+    with patch(
+        "app.diagram.render_mermaid_to_png",
+        return_value=(True, b"\x89PNG\r\n\x1a\nrendered", None),
+    ):
+        res = extract_diagram_to_mermaid(img_file, mock_llm)
     assert res.status == "success"
     assert res.is_mermaid is True
     assert res.mermaid_code is not None
@@ -410,17 +414,12 @@ def test_render_mermaid_to_png_success(tmp_path: Path):
     B --> C["Selesai"]
     """
     out_file = tmp_path / "diagram_test.png"
-    ok, png_bytes, err = render_mermaid_to_png(valid_mermaid, output_path=out_file)
-    if not ok and err and any(
-        marker in err.lower()
-        for marker in (
-            "chrome-headless-shell",
-            "tidak terinstal",
-            "system cannot find the file specified",
-            "winerror 2",
-        )
-    ):
-        return
+    expected_png = b"\x89PNG\r\n\x1a\nrendered"
+    with patch("mmdc.LocalMermaidConverter") as converter_cls:
+        converter_cls.return_value.convert_to_png.return_value = expected_png
+        ok, png_bytes, err = render_mermaid_to_png(valid_mermaid, output_path=out_file)
+    converter_cls.return_value.convert_to_png.assert_called_once_with(valid_mermaid)
+    converter_cls.return_value.cleanup.assert_called_once()
     assert ok is True
     assert err is None
     assert png_bytes is not None
@@ -437,7 +436,10 @@ def test_render_mermaid_to_png_failure():
         S --> InsideNode
     end
     """
-    ok, png_bytes, err = render_mermaid_to_png(cycle_mermaid)
+    with patch("mmdc.LocalMermaidConverter") as converter_cls:
+        converter_cls.return_value.convert_to_png.side_effect = RuntimeError("Error: cycle")
+        ok, png_bytes, err = render_mermaid_to_png(cycle_mermaid)
+    converter_cls.return_value.cleanup.assert_called_once()
     assert ok is False
     assert png_bytes is None
     assert err is not None
@@ -486,7 +488,11 @@ def test_extract_diagram_visual_feedback_loop(tmp_path: Path):
 
     mock_llm.invoke.side_effect = [resp_classify, resp_extract, resp_verify]
 
-    res = extract_diagram_to_mermaid(img_file, mock_llm)
+    with patch(
+        "app.diagram.render_mermaid_to_png",
+        return_value=(True, b"\x89PNG\r\n\x1a\nrendered", None),
+    ):
+        res = extract_diagram_to_mermaid(img_file, mock_llm)
     assert res.status == "success"
     assert res.is_mermaid is True
     assert res.mermaid_code is not None

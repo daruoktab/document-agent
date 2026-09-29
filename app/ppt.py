@@ -514,7 +514,8 @@ def process_presentation_vision(
             try:
                 checkpoint_data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
                 if (
-                    checkpoint_data.get("source_file") == str(path_obj)
+                    Path(str(checkpoint_data.get("source_file", ""))).resolve()
+                    == path_obj
                     and checkpoint_data.get("total_pages") == len(slide_images)
                 ):
                     raw_pages = checkpoint_data.get("pages", {})
@@ -643,6 +644,8 @@ def process_presentation_vision(
             db_path=db_out_path,
             table_name_prefix=path_obj.stem,
             force_all_tables=force_all_tables,
+            llm=getattr(pipeline, "language_vlm", None)
+            or getattr(pipeline, "vlm", None),
         )
 
         pages_markdown.append(slide_md)

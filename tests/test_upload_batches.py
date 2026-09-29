@@ -44,7 +44,7 @@ class TestUploadBatches(unittest.TestCase):
             paths = _save_uploaded_files(
                 [
                     UploadedFileStub("report.pdf", b"same"),
-                    UploadedFileStub("nested/report.pdf", b"same"),
+                    UploadedFileStub("report.pdf", b"same"),
                 ],
                 root,
             )
@@ -73,10 +73,11 @@ class TestUploadBatches(unittest.TestCase):
                     ("a/report.pdf", b"one"),
                     ("a/nested/report.pdf", b"two"),
                     ("b/report.pdf", b"one"),
+                    ("a/report.pdf", b"one"),
                 ]
             ]
             paths = _save_uploaded_files(uploads, root)
-            self.assertEqual(len(paths), 2)
+            self.assertEqual(len(paths), 3)
             batch = create_batch(root, "Folder reports", [{"stem": p.stem, "source_name": p.name} for p in paths])
             self.assertEqual(list_batches(root), [batch])
             for index, path in enumerate(paths):

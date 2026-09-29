@@ -3,7 +3,7 @@ Orkestrasi Pipeline Ekstraksi Dokumen VLM -> Markdown Siap Chunking dengan LangG
 Mendukung multi-spesifikasi komposit layout dokumen dengan logging transparan.
 
 Alur StateGraph:
-    START -> preprocess -> inspect/orient -> OCR quality gate -> draft -> specialist -> judge -> END
+    START -> preprocess -> inspect/orient -> OCR quality gate -> draft -> specialist -> judge -> language_refine -> END
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from langgraph.graph.state import CompiledStateGraph
 from .agents import get_agent
 from .config import Settings, get_settings
 from .extractor import VisionExtractor
-from .llm import build_vlm
+from .language_refiner import refine_audited_markdown
+from .llm import build_language_vlm, build_vlm
 from .multi_page import extract_document_title
 from .ocr import UnlimitedOCRExtractor
 from .paddle_ocr import PaddleOCRVLExtractor
@@ -67,6 +68,9 @@ class DocumentExtractionState(TypedDict, total=False):
     diagram_summaries: list[str]
     visual_descriptions: list[str]
     final_markdown: str
+    draft_markdown: str
+    visual_audit_applied: bool
+    language_refine_status: str
 
 
 # --- Adaptive Fast-Path Helpers (0 biaya VLM) --------------------------------
@@ -166,9 +170,17 @@ class DocumentExtractionPipeline:
         *,
         thorough: bool = False,
         ocr_extractor: Any | None = None,
+        language_vlm: BaseChatModel | Any | None = None,
     ) -> None:
         self.settings: Settings = settings or get_settings()
         self.vlm: BaseChatModel = vlm or build_vlm(self.settings)
+        self.language_vlm: BaseChatModel | Any | None = (
+            language_vlm
+            if language_vlm is not None
+            else build_language_vlm(self.settings)
+            if self.settings.language_vlm_model
+            else None
+        )
         self.extractor = VisionExtractor(self.vlm)
         self.ocr_extractor: Any | None = ocr_extractor
         if self.ocr_extractor is None and ocr_llm is not None:
@@ -223,6 +235,7 @@ class DocumentExtractionPipeline:
         builder.add_node("extract_markdown", self._node_extract_markdown)
         builder.add_node("summon_diagram_specialist", self._node_summon_diagram_specialist)
         builder.add_node("aggregate_and_judge", self._node_aggregate_and_judge)
+        builder.add_node("refine_language", self._node_refine_language)
 
         # Edges
         builder.add_edge(START, "preprocess")
@@ -232,7 +245,8 @@ class DocumentExtractionPipeline:
         builder.add_edge("extract_ocr", "extract_markdown")
         builder.add_edge("extract_markdown", "summon_diagram_specialist")
         builder.add_edge("summon_diagram_specialist", "aggregate_and_judge")
-        builder.add_edge("aggregate_and_judge", END)
+        builder.add_edge("aggregate_and_judge", "refine_language")
+        builder.add_edge("refine_language", END)
 
         return builder.compile()
 
@@ -624,11 +638,15 @@ class DocumentExtractionPipeline:
         mermaid_codes: list[str] = []
         diagram_summaries: list[str] = []
         visual_descriptions: list[str] = []
+        diagram_kwargs: dict[str, Any] = {"forced_diagram_type": diag_hint}
+        language_vlm = getattr(self, "language_vlm", None)
+        if language_vlm is not None:
+            diagram_kwargs["language_llm"] = language_vlm
         for target in targets:
             diag_result = extract_diagram_to_mermaid(
                 image_path=target,
                 llm=self.vlm,
-                forced_diagram_type=diag_hint,
+                **diagram_kwargs,
             )
             if diag_result.mermaid_code:
                 mermaid_codes.append(diag_result.mermaid_code)
@@ -683,6 +701,7 @@ class DocumentExtractionPipeline:
                 "difficulty": "simple",
                 "markdown_content": "",
                 "final_markdown": "",
+                "visual_audit_applied": False,
             }
         mermaid_codes = state.get("diagram_mermaid_codes", [])
         if not mermaid_codes and state.get("diagram_mermaid_code"):
@@ -743,6 +762,7 @@ class DocumentExtractionPipeline:
                 **state,
                 "markdown_content": final_md,
                 "final_markdown": final_md,
+                "visual_audit_applied": False,
             }
 
         # 2. Fast-path: skip judge untuk halaman simple yang bersih
@@ -764,6 +784,7 @@ class DocumentExtractionPipeline:
                 "difficulty": difficulty,
                 "markdown_content": combined_md,
                 "final_markdown": combined_md,
+                "visual_audit_applied": False,
             }
 
         # 3. Lakukan evaluasi koreksi ulang (Judge & Refine)
@@ -842,6 +863,37 @@ class DocumentExtractionPipeline:
             "markdown_content": final_md,
             "final_markdown": final_md,
             "ocr_status": final_status,
+            "draft_markdown": combined_md,
+            "visual_audit_applied": True,
+        }
+
+    def _node_refine_language(
+        self, state: DocumentExtractionState
+    ) -> DocumentExtractionState:
+        """Susun teks akhir dari audit visual tanpa mengirim gambar ke VLM bahasa."""
+        language_vlm = getattr(self, "language_vlm", None)
+        if language_vlm is None or not state.get("visual_audit_applied", False):
+            return {**state, "language_refine_status": "skipped"}
+
+        audited = state.get("final_markdown", state.get("markdown_content", ""))
+        final_md, status = refine_audited_markdown(
+            llm=language_vlm,
+            draft_markdown=state.get("draft_markdown", audited),
+            audited_markdown=audited,
+            previous_page_context=state.get("previous_page_context"),
+            native_text=state.get("native_text"),
+        )
+        logger.info(
+            "[Pipeline:LanguageRefine] model=%s status=%s chars=%d",
+            self.settings.language_vlm_model or "injected-language-vlm",
+            status,
+            len(final_md),
+        )
+        return {
+            **state,
+            "markdown_content": final_md,
+            "final_markdown": final_md,
+            "language_refine_status": status,
         }
 
 

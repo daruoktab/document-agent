@@ -365,7 +365,7 @@ class TestExcelAgentMode(unittest.TestCase):
             native_markdown = root / "out" / "summary.native.md"
             self.assertTrue(native_markdown.exists())
             self.assertIn("Baris agregat", native_markdown.read_text(encoding="utf-8"))
-            self.assertIn(str(native_markdown), result["instruction"])
+            self.assertIn(str(native_markdown.resolve()), result["instruction"])
 
     def test_native_context_is_cached_per_file_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

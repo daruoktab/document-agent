@@ -33,7 +33,7 @@ from .docx import process_multipage_docx
 from .excel import process_multipage_excel
 from .extractor import VisionExtractor
 from .graph import DocumentExtractionPipeline
-from .llm import build_vlm
+from .llm import build_language_vlm, build_vlm
 from .multi_page import preview_markdown_chunks as sim_preview_chunks
 from .pdf import process_multipage_pdf
 from .ppt import process_presentation_vision
@@ -318,8 +318,14 @@ def extract_diagram_to_mermaid(
     try:
         proc = preprocess_image(str(path_obj))
         vlm = build_vlm(settings)
+        language_vlm = (
+            build_language_vlm(settings) if settings.language_vlm_model else None
+        )
         res = run_extract_diagram(
-            proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint
+            proc.processed_path,
+            llm=vlm,
+            forced_diagram_type=diagram_hint,
+            language_llm=language_vlm,
         )
         payload = res.model_dump()
         rendered_bytes = payload.pop("rendered_image_bytes", None)

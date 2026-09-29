@@ -7,7 +7,7 @@ Berbeda dengan `app/agents.py` (profil prompt deterministik), file ini membangun
 AI agent sungguhan via `deepagents.create_deep_agent`:
   - Master Orchestrator LLM yang MEMUTUSKAN sendiri tool/sub-agent mana yang
     dipanggil berdasarkan konteks dokumen.
-  - 7 Sub-Agent terspesialisasi (klasifikasi, ekstraksi, diagram, PPT, PDF,
+  - 8 Sub-Agent terspesialisasi (klasifikasi, ekstraksi, diagram, PPT, PDF,
     SQLite) yang dapat di-summon oleh master.
   - Semua tool terintegrasi dengan flag CLI: `db_path` & `output_markdown_path`
     di-bake ke dalam tool sehingga deep agent menghormati `-o` dan `--db-path`.
@@ -35,7 +35,8 @@ from .docx import process_multipage_docx
 from .excel import process_multipage_excel
 from .extractor import VisionExtractor
 from .graph import DocumentExtractionPipeline
-from .llm import build_vlm
+from .language_refiner import refine_audited_markdown
+from .llm import build_language_vlm, build_vlm
 from .multi_page import preview_markdown_chunks
 from .pdf import process_multipage_pdf
 from .ppt import process_presentation_vision
@@ -59,7 +60,7 @@ def build_deep_agent(
     output_markdown_path: str | Path | None = None,
 ) -> Any:
     """
-    Bangun Deep Reasoning Agent utama dengan armada Sub-Agent spesialis dua-model:
+    Bangun Deep Reasoning Agent dengan VLM visual, VLM bahasa, dan OCR:
       1. `layout-classifier`          : Mengklasifikasikan multi-trait dokumen
       2. `ocr-markdown-extractor`     : Ekstraksi OCR primer ke Markdown
       3. `diagram-mermaid-specialist` : Evaluasi selektif & ekstraksi diagram ke sintaks Mermaid.js
@@ -75,8 +76,15 @@ def build_deep_agent(
     """
     resolved_settings = settings or get_settings()
     vlm = build_vlm(resolved_settings)
+    language_vlm = (
+        build_language_vlm(resolved_settings)
+        if resolved_settings.language_vlm_model
+        else None
+    )
     extractor = VisionExtractor(vlm)
-    pipeline = DocumentExtractionPipeline(resolved_settings, vlm=vlm)
+    pipeline = DocumentExtractionPipeline(
+        resolved_settings, vlm=vlm, language_vlm=language_vlm
+    )
 
     default_db_path = str(db_path) if db_path else None
     default_out_path = str(output_markdown_path) if output_markdown_path else None
@@ -144,8 +152,13 @@ def build_deep_agent(
     ) -> str:
         """Ekstrak flowchart menjadi Mermaid atau deskripsikan visual selain flowchart."""
         proc = preprocess_image(image_path)
+        diagram_kwargs: dict[str, Any] = {"forced_diagram_type": diagram_hint}
+        if language_vlm is not None:
+            diagram_kwargs["language_llm"] = language_vlm
         res = run_extract_diagram(
-            proc.processed_path, llm=vlm, forced_diagram_type=diagram_hint
+            proc.processed_path,
+            llm=vlm,
+            **diagram_kwargs,
         )
         payload = res.model_dump()
         rendered_bytes = payload.pop("rendered_image_bytes", None)
@@ -253,7 +266,7 @@ def build_deep_agent(
             db_path=db_path or default_db_path,
             table_name_prefix=table_name_prefix,
             force_all_tables=force_all,
-            llm=vlm,
+            llm=language_vlm or vlm,
         )
         return json.dumps(
             [r.model_dump() for r in results], indent=2, ensure_ascii=False
@@ -280,7 +293,7 @@ def build_deep_agent(
     ) -> str:
         """Lakukan audit verifikasi ganda (double-verification) pada tabel SQLite (integritas baris, skema, agregasi SUM/AVG, dan kontinuitas saldo transaksi)."""
         mgr = TabularDatabaseManager(db_path or default_db_path)
-        verifier = TabularVerifier(mgr, llm=vlm)
+        verifier = TabularVerifier(mgr, llm=language_vlm or vlm)
         report = verifier.verify_table(table_name, expected_row_count=expected_rows)
         return json.dumps(report.model_dump(), indent=2, ensure_ascii=False)
 
@@ -293,6 +306,12 @@ def build_deep_agent(
         refined = extractor.judge_and_refine(
             proc.processed_path, draft_markdown, specs=specs.split(",")
         )
+        if language_vlm is not None:
+            refined, _ = refine_audited_markdown(
+                llm=language_vlm,
+                draft_markdown=draft_markdown,
+                audited_markdown=refined,
+            )
         return refined
 
     tools = [
@@ -434,6 +453,9 @@ def build_deep_agent(
         "  - 'excel-orchestrator'        : Mengelola workbook Excel/ODS secara native-first (sel, formula, grafik); VLM hanya untuk dashboard/gambar.\n"
         "  - 'tabular-db-specialist'     : Memisahkan tabel transaksional ke SQLite dan melakukan double-verification.\n\n"
         "Instruksi Kerja:\n"
+        "Gunakan hasil tool OCR/Gemma sebagai bukti visual. Jangan menebak isi gambar "
+        "dari path atau nama berkas; tugas Anda adalah memilih tool, menalar dari hasilnya, "
+        "dan menyusun jawaban.\n"
         f"{MARKDOWN_LINE_BREAK_RULES}\n\n"
         f"{MERMAID_EXTRACTION_RULES}\n\n"
         "1. Identifikasi format dokumen masukan (PDF, DOCX/DOC, Excel, PPTX, gambar tunggal).\n"
@@ -451,7 +473,7 @@ def build_deep_agent(
     )
 
     agent = create_deep_agent(
-        model=vlm,
+        model=language_vlm or vlm,
         tools=tools,
         subagents=subagents,
         system_prompt=master_system_prompt,

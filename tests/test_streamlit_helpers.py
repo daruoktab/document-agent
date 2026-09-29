@@ -55,7 +55,7 @@ class TestStreamlitHelpers(unittest.TestCase):
 
         page = component.call_args.args[0]
         source = re.search(r"const diagramSource = (.*);", page)
-        self.assertIsNotNone(source)
+        assert source is not None
         self.assertEqual(json.loads(source.group(1)), code)
         self.assertIn("mermaid.render('mermaid-svg', diagramSource)", page)
         self.assertNotIn("--&gt;", page)
