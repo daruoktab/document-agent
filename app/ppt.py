@@ -23,7 +23,7 @@ from typing import Any
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from .config import DEFAULT_DPI
+from .config import DEFAULT_DPI, environment_value
 from .llm import encode_image_to_base64
 from .multi_page import (
     extract_document_title,
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 def _find_libreoffice_binary() -> str | None:
     """Temukan binary LibreOffice / soffice di sistem Windows atau Linux."""
     # 1. Path eksplisit dari konfigurasi pengguna.
-    configured = os.environ.get("LIBREOFFICE_BIN")
+    configured = environment_value("LIBREOFFICE_BIN")
     if configured:
         configured_path = Path(configured).expanduser()
         if configured_path.is_file():
@@ -658,6 +658,9 @@ def process_presentation_vision(
 
         checkpoint_pages[idx] = {
             "markdown": slide_md,
+            "visual_audit_status": res.get("visual_audit_status", "skipped") if res else "skipped",
+            "language_refine_status": res.get("language_refine_status", "skipped") if res else "skipped",
+            "model_routes": res.get("model_routes", []) if res else [],
             "visual_count": int(res.get("visual_count", 0)) if res else 0,
             "table_count": int(res.get("table_count", 0)) if res else 0,
         }

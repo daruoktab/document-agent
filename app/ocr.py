@@ -397,9 +397,8 @@ class UnlimitedOCRExtractor:
         first = self.extract(path, native_text=native_text)
         candidates.append((0, path, first))
 
-        should_retry = self.rotation_retry and (
-            first.status != "success"
-            or first.trust_level != "high"
+        should_retry = self.rotation_retry and first.status == "success" and (
+            first.trust_level != "high"
             or "right_angle_suspected" in first.risk_flags
         )
         if should_retry:
@@ -407,6 +406,8 @@ class UnlimitedOCRExtractor:
                 rotated = Path(rotate_image_right_angle(path, degrees))
                 candidate = self.extract(rotated, native_text=native_text)
                 candidates.append((degrees, rotated, candidate))
+                if candidate.status == "error":
+                    break
                 if candidate.status == "success" and candidate.trust_level == "high":
                     break
 

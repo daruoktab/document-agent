@@ -23,6 +23,7 @@ from .config import Settings, get_settings
 from .extractor import VisionExtractor
 from .language_refiner import refine_audited_markdown
 from .llm import build_language_vlm, build_vlm
+from .model_runtime import ModelRuntime, RoutedChatModel
 from .multi_page import extract_document_title
 from .ocr import UnlimitedOCRExtractor
 from .paddle_ocr import PaddleOCRVLExtractor
@@ -71,6 +72,8 @@ class DocumentExtractionState(TypedDict, total=False):
     draft_markdown: str
     visual_audit_applied: bool
     language_refine_status: str
+    visual_audit_status: str
+    visual_rescue_markdown: str
 
 
 # --- Adaptive Fast-Path Helpers (0 biaya VLM) --------------------------------
@@ -171,6 +174,7 @@ class DocumentExtractionPipeline:
         thorough: bool = False,
         ocr_extractor: Any | None = None,
         language_vlm: BaseChatModel | Any | None = None,
+        model_runtime: ModelRuntime | None = None,
     ) -> None:
         self.settings: Settings = settings or get_settings()
         self.vlm: BaseChatModel = vlm or build_vlm(self.settings)
@@ -181,7 +185,11 @@ class DocumentExtractionPipeline:
             if self.settings.language_vlm_model
             else None
         )
-        self.extractor = VisionExtractor(self.vlm)
+        self.model_runtime = model_runtime or ModelRuntime(self.vlm, self.language_vlm, settings=self.settings)
+        self.vlm = self.model_runtime.routed("vision")
+        if self.language_vlm is not None:
+            self.language_vlm = self.model_runtime.routed("agent")
+        self.extractor = VisionExtractor(self.vlm, settings=self.settings)
         self.ocr_extractor: Any | None = ocr_extractor
         if self.ocr_extractor is None and ocr_llm is not None:
             # Kompatibilitas test/caller lama; runtime normal memakai PaddleOCR-VL.
@@ -269,6 +277,9 @@ class DocumentExtractionPipeline:
         Returns:
             PipelinePageResult terstruktur dan tervalidasi Pydantic.
         """
+        if is_first_page:
+            self.model_runtime.reset()
+        route_start = len(self.model_runtime.events)
         initial_state: DocumentExtractionState = {
             "image_path": image_path,
             "forced_specs": forced_specs,
@@ -328,6 +339,9 @@ class DocumentExtractionPipeline:
                 else ocr_payload.rotation_degrees
             ),
             vlm_visual_rescue=bool(final_state.get("requires_vlm_reading", False)),
+            visual_audit_status=final_state.get("visual_audit_status", "skipped"),
+            language_refine_status=final_state.get("language_refine_status", "skipped"),
+            model_routes=self.model_runtime.events[route_start:],
         )
 
     # =========================================================================
@@ -503,6 +517,7 @@ class DocumentExtractionPipeline:
             else 0
         )
         preserve_ocr_table = False
+        visual_rescue_markdown = ""
 
         if ocr_result.decision == "blank_page":
             md_text = ""
@@ -553,6 +568,7 @@ class DocumentExtractionPipeline:
                 len(table["rows"]) for table in parse_markdown_tables(md_text)
             )
             if trusted_ocr_rows > vlm_rows:
+                visual_rescue_markdown = md_text
                 logger.warning(
                     "[Pipeline:ExtractMarkdown] Tabel OCR lebih lengkap dari VLM (%d > %d baris); mempertahankan OCR.",
                     trusted_ocr_rows,
@@ -592,6 +608,7 @@ class DocumentExtractionPipeline:
             "ocr_status": ocr_status,
             "ocr_force_judge": ocr_status != "blank_page",
             "preserve_ocr_table": preserve_ocr_table,
+            "visual_rescue_markdown": visual_rescue_markdown,
             "ocr_result": ocr_result.model_dump(),
         }
 
@@ -751,7 +768,9 @@ class DocumentExtractionPipeline:
                     )
                 combined_md += mermaid_block
 
-        if state.get("preserve_ocr_table") and not mermaid_codes:
+        if (state.get("preserve_ocr_table") and not mermaid_codes
+                and not state.get("requires_vlm_reading") and not self.thorough
+                and not state.get("ocr_force_judge")):
             from .tabular_db import sanitize_markdown_tables
 
             final_md = sanitize_markdown_tables(combined_md)
@@ -788,13 +807,25 @@ class DocumentExtractionPipeline:
             }
 
         # 3. Lakukan evaluasi koreksi ulang (Judge & Refine)
-        final_md = self.extractor.judge_and_refine(
+        audit = self.extractor.audit_markdown(
             image_path=img,
             draft_markdown=combined_md,
             specs=specs,
             previous_page_context=state.get("previous_page_context"),
             native_text=state.get("native_text"),
+            preserve_tables=bool(state.get("preserve_ocr_table")),
+            rescue_markdown=state.get("visual_rescue_markdown"),
         )
+
+        final_md = audit.final_markdown
+        audit_accepted = audit.action == "accepted"
+        if state.get("preserve_ocr_table"):
+            from .tabular_db import parse_markdown_tables
+            original_rows = sum(len(t["rows"]) for t in parse_markdown_tables(combined_md))
+            corrected_rows = sum(len(t["rows"]) for t in parse_markdown_tables(final_md))
+            if corrected_rows < original_rows:
+                final_md = combined_md
+                audit_accepted = False
 
         # 4. Guardrail Pasca-Judge: Sanitasi tabel & validasi ulang blok Mermaid
         from .diagram import (
@@ -820,6 +851,7 @@ class DocumentExtractionPipeline:
             len(final_blocks) < len(original_blocks) or not all(valid_block(code) for code in final_blocks)
         ):
             final_md = sanitize_markdown_tables(combined_md)
+            audit_accepted = False
 
         def _clean_mermaid_in_md(m: re.Match) -> str:
             raw_code = m.group(1)
@@ -864,7 +896,10 @@ class DocumentExtractionPipeline:
             "final_markdown": final_md,
             "ocr_status": final_status,
             "draft_markdown": combined_md,
-            "visual_audit_applied": True,
+            "visual_audit_applied": audit_accepted,
+            "visual_audit_status": audit.action if audit_accepted else (
+                "rejected_truncation" if audit.action == "accepted" else audit.action
+            ),
         }
 
     def _node_refine_language(
@@ -872,7 +907,8 @@ class DocumentExtractionPipeline:
     ) -> DocumentExtractionState:
         """Susun teks akhir dari audit visual tanpa mengirim gambar ke VLM bahasa."""
         language_vlm = getattr(self, "language_vlm", None)
-        if language_vlm is None or not state.get("visual_audit_applied", False):
+        if (language_vlm is None or not state.get("visual_audit_applied", False)
+                or (isinstance(language_vlm, RoutedChatModel) and not language_vlm.runtime.dual_available())):
             return {**state, "language_refine_status": "skipped"}
 
         audited = state.get("final_markdown", state.get("markdown_content", ""))
@@ -882,6 +918,8 @@ class DocumentExtractionPipeline:
             audited_markdown=audited,
             previous_page_context=state.get("previous_page_context"),
             native_text=state.get("native_text"),
+            verifier=self.vlm,
+            image_path=state.get("preprocessed_path") or state.get("image_path"),
         )
         logger.info(
             "[Pipeline:LanguageRefine] model=%s status=%s chars=%d",

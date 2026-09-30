@@ -34,6 +34,7 @@ from .excel import process_multipage_excel
 from .extractor import VisionExtractor
 from .graph import DocumentExtractionPipeline
 from .llm import build_language_vlm, build_vlm
+from .model_runtime import ModelRuntime
 from .multi_page import preview_markdown_chunks as sim_preview_chunks
 from .pdf import process_multipage_pdf
 from .ppt import process_presentation_vision
@@ -262,7 +263,9 @@ def classify_document_layout(image_path: str) -> str:
     try:
         proc = preprocess_image(str(path_obj))
         vlm = build_vlm(settings)
-        extractor = VisionExtractor(vlm)
+        agent_vlm = build_language_vlm(settings) if settings.language_vlm_model else None
+        vlm = ModelRuntime(vlm, agent_vlm, settings=settings).routed("vision")
+        extractor = VisionExtractor(vlm, settings=settings)
         specs = extractor.classify(proc.processed_path)
         return json.dumps(
             {"file": str(path_obj), "specs": specs}, indent=2, ensure_ascii=False
@@ -287,6 +290,8 @@ def classify_diagram_convertibility(image_path: str) -> str:
     try:
         proc = preprocess_image(str(path_obj))
         vlm = build_vlm(settings)
+        agent_vlm = build_language_vlm(settings) if settings.language_vlm_model else None
+        vlm = ModelRuntime(vlm, agent_vlm, settings=settings).routed("vision")
         res = run_classify_diagram(proc.processed_path, llm=vlm)
         payload = res.model_dump()
         # Payload MCP harus JSON; bytes PNG tersedia melalui path artefak, bukan
@@ -321,6 +326,9 @@ def extract_diagram_to_mermaid(
         language_vlm = (
             build_language_vlm(settings) if settings.language_vlm_model else None
         )
+        runtime = ModelRuntime(vlm, language_vlm, settings=settings)
+        vlm = runtime.routed("vision")
+        language_vlm = runtime.routed("agent") if language_vlm is not None else None
         res = run_extract_diagram(
             proc.processed_path,
             llm=vlm,

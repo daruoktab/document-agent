@@ -159,8 +159,7 @@ def test_pipeline_keeps_images_on_gemma_and_refines_text_on_language_vlm(tmp_pat
     for call in visual.invoke.call_args_list:
         assert "image_url" in str(call.args[0])
     language.invoke.assert_called_once()
-    assert isinstance(language.invoke.call_args.args[0], str)
-    assert "image_url" not in language.invoke.call_args.args[0]
+    assert "image_url" not in str(language.invoke.call_args.args[0])
 
 
 def test_pipeline_without_language_model_keeps_optional_stage_disabled() -> None:
@@ -354,10 +353,11 @@ def test_deep_agent_uses_language_vlm_for_master_and_subagents() -> None:
         result = build_deep_agent(Settings(language_vlm_model="language-model"))
 
     assert result is sentinel
-    assert create.call_args.kwargs["model"] is language
+    assert create.call_args.kwargs["model"].runtime.models["agent"] is language
+    assert create.call_args.kwargs["model"].role == "agent"
     assert len(create.call_args.kwargs["subagents"]) == 8
     assert all("model" not in agent for agent in create.call_args.kwargs["subagents"])
-    assert pipeline_builder.call_args.kwargs["language_vlm"] is language
+    assert pipeline_builder.call_args.kwargs["language_vlm"].runtime.models["agent"] is language
 
 
 def test_deep_agent_falls_back_to_visual_model_without_agent_focus() -> None:
@@ -374,7 +374,7 @@ def test_deep_agent_falls_back_to_visual_model_without_agent_focus() -> None:
         build_deep_agent(Settings(language_vlm_model=""))
 
     build_language.assert_not_called()
-    assert create.call_args.kwargs["model"] is visual
+    assert create.call_args.kwargs["model"].runtime.models["vision"] is visual
 
 
 def test_deep_agent_image_tools_stay_on_vision_focus(tmp_path) -> None:
@@ -385,7 +385,9 @@ def test_deep_agent_image_tools_stay_on_vision_focus(tmp_path) -> None:
     visual = MagicMock()
     language = MagicMock()
     visual_extractor = MagicMock()
-    visual_extractor.judge_and_refine.return_value = "# Audited"
+    visual_extractor.audit_markdown.return_value = SimpleNamespace(
+        final_markdown="# Audited", action="accepted"
+    )
     page_agent = MagicMock()
     page_agent.run.return_value = "# Extracted"
     pipeline = MagicMock()
@@ -419,9 +421,9 @@ def test_deep_agent_image_tools_stay_on_vision_focus(tmp_path) -> None:
         })
 
     assert extracted == "# Extracted"
-    assert page_agent.run.call_args.kwargs["llm"] is visual
-    visual_extractor.judge_and_refine.assert_called_once()
-    assert refine.call_args.kwargs["llm"] is language
+    assert page_agent.run.call_args.kwargs["llm"].runtime.models["vision"] is visual
+    visual_extractor.audit_markdown.assert_called_once()
+    assert refine.call_args.kwargs["llm"].runtime.models["agent"] is language
     assert judged == "## Final"
     language.invoke.assert_not_called()
 
@@ -513,8 +515,8 @@ def test_mcp_diagram_tool_routes_visual_and_text_models(tmp_path) -> None:
         payload = mcp_extract_diagram(str(image))
 
     assert json.loads(payload)["status"] == "success"
-    assert run.call_args.kwargs["llm"] is visual
-    assert run.call_args.kwargs["language_llm"] is language
+    assert run.call_args.kwargs["llm"].runtime.models["vision"] is visual
+    assert run.call_args.kwargs["language_llm"].runtime.models["agent"] is language
 
 
 def test_mcp_diagram_tool_without_agent_focus_uses_vision_only(tmp_path) -> None:
@@ -540,5 +542,5 @@ def test_mcp_diagram_tool_without_agent_focus_uses_vision_only(tmp_path) -> None
 
     assert json.loads(payload)["status"] == "success"
     build_language.assert_not_called()
-    assert run.call_args.kwargs["llm"] is visual
+    assert run.call_args.kwargs["llm"].runtime.models["vision"] is visual
     assert run.call_args.kwargs["language_llm"] is None

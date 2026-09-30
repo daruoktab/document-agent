@@ -1114,8 +1114,15 @@ def submit_page_and_get_next(
 
     is_complete = result_state.get("is_complete", False)
     rendered_images = result_state.get("rendered_images", [])
+    expected_pages = set(range(1, int(result_state.get("total_items", 0)) + 1))
+    is_complete = bool(is_complete and expected_pages
+                       and expected_pages <= set(result_state.get("saved_pages", []))
+                       and not result_state.get("missing_pages"))
 
-    if is_complete or not rendered_images:
+    if not rendered_images and not is_complete:
+        return "ERROR: Dokumen belum lengkap dan halaman berikutnya tidak tersedia."
+
+    if is_complete and not result_state.get("missing_pages"):
         response_data = {
             "status": "success",
             "is_complete": True,

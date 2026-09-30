@@ -9,7 +9,9 @@ Menyediakan:
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -215,6 +217,9 @@ def batch_extract_documents(
     if limit is not None and limit > 0:
         files_to_process = files_to_process[:limit]
 
+    files_to_process = list(dict.fromkeys(path.resolve() for path in files_to_process))
+    stem_counts = Counter(path.stem.casefold() for path in files_to_process)
+
     if not files_to_process:
         return {
             "status": "warning",
@@ -230,8 +235,12 @@ def batch_extract_documents(
     processed_results: list[dict[str, Any]] = []
 
     for idx, doc_file in enumerate(files_to_process, start=1):
+        pipeline.model_runtime.reset()
         ext = doc_file.suffix.lower()
         rel_stem = doc_file.stem
+        if stem_counts[rel_stem.casefold()] > 1:
+            identity = hashlib.sha256(str(doc_file).casefold().encode()).hexdigest()[:12]
+            rel_stem = f"{rel_stem}_{identity}"
         doc_dir = out_base / rel_stem
         doc_dir.mkdir(parents=True, exist_ok=True)
         out_file = doc_dir / f"{rel_stem}.md"

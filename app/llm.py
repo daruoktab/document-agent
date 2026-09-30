@@ -135,6 +135,7 @@ def build_chat_model(
     Buat instance `ChatOpenAI` generik untuk endpoint OpenAI-compatible.
     """
     params: dict[str, Any] = dict(extra_kwargs)
+    params.setdefault("max_retries", 0)
 
     # Dukungan model reasoning (mis. Qwen 2.5 / DeepSeek-R1 / Qwen3)
     if enable_thinking is not None:
@@ -213,6 +214,11 @@ def build_ocr(settings: Settings | None = None) -> ChatOpenAI:
     )
 
 
-def get_vlm(settings: Settings | None = None) -> ChatOpenAI:
+def get_vlm(settings: Settings | None = None) -> Any:
     """Alias/Helper untuk mendapatkan instance VLM."""
-    return build_vlm(settings)
+    from .model_runtime import ModelRuntime
+
+    resolved = settings or get_settings()
+    vision = build_vlm(resolved)
+    agent = build_language_vlm(resolved) if resolved.language_vlm_model else None
+    return ModelRuntime(vision, agent, settings=resolved).routed("vision")

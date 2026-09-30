@@ -170,7 +170,9 @@ Diagram alur komponen sistem."""
         pipeline.extractor = cast(
             Any,
             SimpleNamespace(
-                judge_and_refine=lambda **kwargs: kwargs["draft_markdown"]
+                audit_markdown=lambda **kwargs: SimpleNamespace(
+                    final_markdown=kwargs["draft_markdown"], action="accepted"
+                )
             ),
         )
         state = {

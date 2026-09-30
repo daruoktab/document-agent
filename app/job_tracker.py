@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from .config import environment_value
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,7 +42,7 @@ _SLOT_POLL_SECONDS = 1.0
 
 def get_max_concurrent_extractions() -> int:
     """Ambil batas proses ekstraksi bersamaan; satu proses adalah default aman untuk VLM."""
-    raw_value = os.environ.get("MAX_CONCURRENT_EXTRACTIONS", "1").strip()
+    raw_value = environment_value("MAX_CONCURRENT_EXTRACTIONS", "1")
     try:
         return max(1, int(raw_value))
     except ValueError:

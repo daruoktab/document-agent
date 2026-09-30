@@ -135,7 +135,8 @@ class TestQCFixes(unittest.TestCase):
     def test_mermaid_specialist_recovers_invalid_draft(self):
         pipeline = object.__new__(DocumentExtractionPipeline)
         pipeline.thorough = True
-        pipeline.extractor = cast(Any, SimpleNamespace(judge_and_refine=lambda **kw: kw['draft_markdown']))
+        pipeline.extractor = cast(Any, SimpleNamespace(audit_markdown=lambda **kw: SimpleNamespace(
+            final_markdown=kw['draft_markdown'], action="accepted")))
         state = {'image_path': 'unused', 'markdown_content': '# Flow\n```mermaid\nbroken\n```',
                  'diagram_mermaid_code': 'flowchart TD\n A["Start"] --> B["End"]'}
         result = pipeline._node_aggregate_and_judge(cast(Any, state))

@@ -183,6 +183,10 @@ class JudgeAuditDecision(BaseModel):
 class PipelinePageResult(BaseModel):
     """Hasil pemrosesan satu halaman dokumen melalui pipeline ekstraksi."""
 
+    visual_audit_status: str = "skipped"
+    language_refine_status: str = "skipped"
+    model_routes: list[dict[str, Any]] = Field(default_factory=list)
+
     preprocessed_path: str = Field(
         ..., description="Path citra halaman hasil prapemrosesan"
     )
@@ -254,6 +258,10 @@ class PipelinePageResult(BaseModel):
 
 class DocumentPage(BaseModel):
     """Hasil ekstraksi satu halaman dokumen."""
+
+    visual_audit_status: str = "skipped"
+    language_refine_status: str = "skipped"
+    model_routes: list[dict[str, Any]] = Field(default_factory=list)
 
     page_number: int = Field(..., description="Nomor halaman (1-based)")
     specs: list[str] = Field(

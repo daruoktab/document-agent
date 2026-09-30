@@ -123,6 +123,24 @@ def parse_paddle_regions(
     return regions
 
 
+class _RecognizerTimeoutClient:
+    """Override PaddleX's fixed request timeout on this recognizer only."""
+
+    def __init__(self, client: Any, timeout: float) -> None:
+        self.client = client
+        self.timeout = timeout
+        sdk_client = getattr(client, "_client", None)
+        if sdk_client is not None and hasattr(sdk_client, "with_options"):
+            client._client = sdk_client.with_options(timeout=timeout, max_retries=0)
+
+    def create_chat_completion(self, *args: Any, **kwargs: Any) -> Any:
+        kwargs["timeout"] = self.timeout
+        return self.client.create_chat_completion(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.client, name)
+
+
 class PaddleOCRVLExtractor:
     """Paddle layout pipeline dengan recognizer GGUF pada llama.cpp."""
 
@@ -158,9 +176,11 @@ class PaddleOCRVLExtractor:
         self.sparse_ink_ratio = max(self.blank_ink_ratio, sparse_ink_ratio)
         self._pipeline = pipeline
         self._pipeline_factory = pipeline_factory
+        self._native_pipeline = pipeline is None and pipeline_factory is None
 
     def _get_pipeline(self) -> Any:
         if self._pipeline is not None:
+            self._configure_timeout()
             return self._pipeline
         factory = self._pipeline_factory
         if factory is None:
@@ -181,7 +201,18 @@ class PaddleOCRVLExtractor:
             format_block_content=False,
             use_queues=False,
         )
+        self._configure_timeout()
         return self._pipeline
+
+    def _configure_timeout(self) -> None:
+        pipeline = getattr(self._pipeline, "paddlex_pipeline", self._pipeline)
+        recognizer = getattr(pipeline, "vl_rec_model", None)
+        if self._native_pipeline and (recognizer is None or getattr(recognizer, "genai_client", None) is None):
+            raise RuntimeError("Recognizer PaddleX tidak menyediakan adapter timeout yang didukung.")
+        if recognizer is not None:
+            client = getattr(recognizer, "genai_client", None)
+            if client is not None and not isinstance(client, _RecognizerTimeoutClient):
+                recognizer._genai_client = _RecognizerTimeoutClient(client, self.timeout)
 
     def extract(
         self,
@@ -285,11 +316,13 @@ class PaddleOCRVLExtractor:
 
         first = self.extract(path, native_text=native_text)
         candidates: list[tuple[int, Path, OCRExtractionResult]] = [(0, path, first)]
-        if self.rotation_retry and first.trust_level != "high":
+        if self.rotation_retry and first.status == "success" and first.trust_level != "high":
             for degrees in (90, 180, 270):
                 rotated = Path(rotate_image_right_angle(path, degrees))
                 candidate = self.extract(rotated, native_text=native_text)
                 candidates.append((degrees, rotated, candidate))
+                if candidate.status == "error":
+                    break
                 if candidate.status == "success" and candidate.trust_level == "high":
                     break
 

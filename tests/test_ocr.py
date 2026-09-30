@@ -24,6 +24,7 @@ class TestOCRGrounding(unittest.TestCase):
             f"| 202402{i:02d} | Transfer {i} | {i} |" for i in range(1, 9)
         )
         main_llm = MagicMock()
+        main_llm.invoke.return_value.content = '{"prose_valid": true, "edits": []}'
         pipeline = DocumentExtractionPipeline(Settings(ocr_model="paddleocr-vl-1.6"), vlm=main_llm)
         state: DocumentExtractionState = {
             "image_path": "page.png",
@@ -39,13 +40,15 @@ class TestOCRGrounding(unittest.TestCase):
         with patch("app.graph.get_agent") as get_agent:
             get_agent.return_value.run.return_value = vlm_markdown
             selected = pipeline._node_extract_markdown(state)
-        final = pipeline._node_aggregate_and_judge(selected)
+        with patch("app.extractor.image_data_uri", return_value="data:image/png;base64,fake"):
+            final = pipeline._node_aggregate_and_judge(selected)
 
         self.assertEqual(selected["ocr_status"], "accepted")
         self.assertTrue(selected["preserve_ocr_table"])
         self.assertIn("20240229", final["markdown_content"])
         self.assertNotIn("20240229", vlm_markdown)
-        main_llm.invoke.assert_not_called()
+        main_llm.invoke.assert_called_once()
+        self.assertTrue(final["visual_audit_applied"])
 
     def test_parse_regions_maps_and_clamps_coordinates(self) -> None:
         raw = (

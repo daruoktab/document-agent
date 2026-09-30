@@ -2892,6 +2892,21 @@ def persist_excel_native_data(
     grouped_regions: dict[tuple[str, tuple[str, ...]], list[tuple[ExcelRegion, int]]] = {}
 
     with closing(sqlite3.connect(target)) as connection:
+        connection.execute("BEGIN")
+        previous_tables: list[str] = []
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+            if not re.fullmatch(r"excel_.+_[0-9a-f]{8}", name):
+                continue
+            quoted = name.replace('"', '""')
+            columns = {row[1] for row in connection.execute(f'PRAGMA table_info("{quoted}")')}
+            if {"source_file", "sheet_name", "region_id", "period", "source_row"} <= columns:
+                if not connection.execute(
+                    f'SELECT 1 FROM "{quoted}" WHERE source_file = ? LIMIT 1',
+                    (survey.source_file,),
+                ).fetchone():
+                    continue
+                previous_tables.append(name)
+                connection.execute(f'DELETE FROM "{quoted}" WHERE source_file = ?', (survey.source_file,))
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS excel_regions (
@@ -3070,6 +3085,11 @@ def persist_excel_native_data(
                     ),
                 )
             created_tables.append(table_name)
+        for name in previous_tables:
+            if name not in created_tables:
+                quoted = name.replace('"', '""')
+                if not connection.execute(f'SELECT 1 FROM "{quoted}" LIMIT 1').fetchone():
+                    connection.execute(f'DROP TABLE "{quoted}"')
         connection.commit()
     return created_tables
 

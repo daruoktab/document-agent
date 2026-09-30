@@ -37,6 +37,7 @@ from .extractor import VisionExtractor
 from .graph import DocumentExtractionPipeline
 from .language_refiner import refine_audited_markdown
 from .llm import build_language_vlm, build_vlm
+from .model_runtime import ModelRuntime
 from .multi_page import preview_markdown_chunks
 from .pdf import process_multipage_pdf
 from .ppt import process_presentation_vision
@@ -81,9 +82,12 @@ def build_deep_agent(
         if resolved_settings.language_vlm_model
         else None
     )
-    extractor = VisionExtractor(vlm)
+    runtime = ModelRuntime(vlm, language_vlm, settings=resolved_settings)
+    vlm = runtime.routed("vision")
+    language_vlm = runtime.routed("agent") if language_vlm is not None else None
+    extractor = VisionExtractor(vlm, settings=resolved_settings)
     pipeline = DocumentExtractionPipeline(
-        resolved_settings, vlm=vlm, language_vlm=language_vlm
+        resolved_settings, vlm=vlm, language_vlm=language_vlm, model_runtime=runtime
     )
 
     default_db_path = str(db_path) if db_path else None
@@ -303,14 +307,17 @@ def build_deep_agent(
     ) -> str:
         """Lakukan audit verifikasi & koreksi ulang (Judge & Self-Correction) dengan membandingkan draft gabungan Markdown terhadap citra asli dokumen."""
         proc = preprocess_image(image_path)
-        refined = extractor.judge_and_refine(
+        audit = extractor.audit_markdown(
             proc.processed_path, draft_markdown, specs=specs.split(",")
         )
-        if language_vlm is not None:
+        refined = audit.final_markdown
+        if language_vlm is not None and audit.action == "accepted" and runtime.dual_available():
             refined, _ = refine_audited_markdown(
                 llm=language_vlm,
                 draft_markdown=draft_markdown,
                 audited_markdown=refined,
+                verifier=vlm,
+                image_path=proc.processed_path,
             )
         return refined
 

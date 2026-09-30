@@ -22,11 +22,22 @@ from pathlib import Path
 DEFAULT_DPI: int = 200
 PDF_PAGE_BATCH: int = 10
 SUPPORTED_IMAGE_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg", ".webp"}
+_DOTENV_VALUES: dict[str, str] = {}
+_LOCAL_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _raw_env(name: str, default: str) -> str:
+    return os.environ.get(name, _DOTENV_VALUES.get(name, default)).strip()
+
+
+def environment_value(name: str, default: str = "") -> str:
+    """Read an application option with process-over-file precedence."""
+    return _raw_env(name, default)
 
 
 def _env(name: str, default: str) -> str:
     """Ambil env var atau kembalikan default jika kosong."""
-    val = os.environ.get(name, "").strip()
+    val = _raw_env(name, "")
     return val if val else default
 
 
@@ -36,17 +47,21 @@ def _env_first(names: tuple[str, ...], default: str) -> str:
         value = os.environ.get(name, "").strip()
         if value:
             return value
+    for name in names:
+        value = _DOTENV_VALUES.get(name, "").strip() if name not in os.environ else ""
+        if value:
+            return value
     return default
 
 
 def _optional_env(name: str) -> str:
     """Ambil env opsional; string kosong berarti fitur belum dikonfigurasi."""
-    return os.environ.get(name, "").strip()
+    return _raw_env(name, "")
 
 
 def _float_env(name: str, default: str) -> float:
     """Parse float dari environment variable dengan fallback."""
-    raw = os.environ.get(name, default).strip()
+    raw = _raw_env(name, default)
     try:
         return float(raw)
     except ValueError:
@@ -55,7 +70,7 @@ def _float_env(name: str, default: str) -> float:
 
 def _int_env(name: str, default: str) -> int:
     """Parse int dari environment variable dengan fallback."""
-    raw = os.environ.get(name, default).strip()
+    raw = _raw_env(name, default)
     try:
         return int(raw)
     except ValueError:
@@ -64,7 +79,7 @@ def _int_env(name: str, default: str) -> int:
 
 def _bool_env(name: str, default: str) -> bool:
     """Parse boolean dari environment variable ('1'/'true'/'yes'/'on' -> True)."""
-    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+    return _raw_env(name, default).lower() in ("1", "true", "yes", "on")
 
 
 def _float_env_first(names: tuple[str, ...], default: str) -> float:
@@ -85,13 +100,16 @@ def _bool_env_first(names: tuple[str, ...], default: str) -> bool:
     return _env_first(names, default).lower() in ("1", "true", "yes", "on")
 
 
-def _load_local_dotenv() -> None:
+def _load_local_dotenv(env_path: Path | None = None) -> None:
     """Load project `.env` before settings are created.
 
     Explicit process environment variables take priority over `.env` values.
     """
-    env_path = Path(__file__).resolve().parent.parent / ".env"
+    global _DOTENV_VALUES
+    env_path = env_path or _LOCAL_ENV_PATH
+    values: dict[str, str] = {}
     if not env_path.is_file():
+        _DOTENV_VALUES = values
         return
 
     for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
@@ -106,11 +124,13 @@ def _load_local_dotenv() -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
-        if not key or key in os.environ:
+        if not key:
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
-        os.environ[key] = value
+        values[key] = value.strip()
+    # Readers in background jobs always see a complete configuration snapshot.
+    _DOTENV_VALUES = values
 
 
 _load_local_dotenv()

@@ -383,6 +383,9 @@ def process_multipage_pdf(
                         specs=list(page_specs),
                         markdown_content=page_md,
                         image_path=str(pages_render_dir / f"page_{page_number:04d}.png"),
+                        visual_audit_status=page_data.get("visual_audit_status", "skipped"),
+                        language_refine_status=page_data.get("language_refine_status", "skipped"),
+                        model_routes=page_data.get("model_routes", []),
                     )
                 )
                 event_data = page_data.get("tabular_event")
@@ -423,6 +426,9 @@ def process_multipage_pdf(
                 str(page.page_number): {
                     "markdown": page.markdown_content,
                     "specs": page.specs,
+                    "visual_audit_status": page.visual_audit_status,
+                    "language_refine_status": page.language_refine_status,
+                    "model_routes": page.model_routes,
                     "visual_count": checkpoint_pages.get(page.page_number, {}).get(
                         "visual_count", 0
                     ),
@@ -548,6 +554,9 @@ def process_multipage_pdf(
                     specs=detected_specs,
                     markdown_content=page_md,
                     image_path=str(img_path),
+                    visual_audit_status=res.get("visual_audit_status", "skipped"),
+                    language_refine_status=res.get("language_refine_status", "skipped"),
+                    model_routes=res.get("model_routes", []),
                 )
             )
 
@@ -579,6 +588,9 @@ def process_multipage_pdf(
 
             checkpoint_pages[idx] = {
                 "markdown": page_md,
+                "visual_audit_status": res.get("visual_audit_status", "skipped"),
+                "language_refine_status": res.get("language_refine_status", "skipped"),
+                "model_routes": res.get("model_routes", []),
                 "specs": detected_specs,
                 "visual_count": int(res.get("visual_count", 0)),
                 "table_count": int(res.get("table_count", 0)),

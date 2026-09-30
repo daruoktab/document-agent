@@ -615,6 +615,13 @@ class AgentDocumentGraph:
         advance_state["batch_end"] = next_page
 
         render_res = self._node_render_batch(cast(Any, advance_state))
+        if render_res.get("status") == "error" or not render_res.get("rendered_images"):
+            return {
+                "status": "error",
+                "error": render_res.get("error") or f"Halaman {next_page} gagal dirender.",
+                "is_complete": False,
+                "rendered_images": [],
+            }
         return {
             "current_page": next_page,
             "rendered_images": render_res.get("rendered_images", []),

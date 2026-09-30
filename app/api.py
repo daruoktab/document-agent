@@ -166,7 +166,7 @@ def ingest(
     manager = JobManager.get_instance()
     job = manager.start_job(input_path=input_path, output_dir=OUTPUT_DIR)
     # A synchronous FastAPI handler runs in a worker thread.
-    while job.status == "running":
+    while job.status in {"queued", "running"}:
         time.sleep(0.5)
         job = manager.get_job(job.job_id, output_dir=OUTPUT_DIR) or job
     if job.status != "completed":

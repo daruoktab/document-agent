@@ -10,6 +10,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolate_local_configuration(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Developer .env must not select real endpoints or alter test expectations."""
+    import app.config
+
+    monkeypatch.setattr(app.config, "_DOTENV_VALUES", {})
+    monkeypatch.setattr(app.config, "_LOCAL_ENV_PATH", tmp_path / "absent.env")
+
+
+@pytest.fixture(autouse=True)
 def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
     original_connect = socket.socket.connect
     original_connect_ex = socket.socket.connect_ex

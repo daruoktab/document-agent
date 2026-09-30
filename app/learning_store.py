@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,12 +17,12 @@ def digest(data: bytes) -> str:
 
 
 def learning_root() -> Path:
-    from .config import _load_local_dotenv
+    from .config import _load_local_dotenv, environment_value
 
     _load_local_dotenv()
     project_root = Path(__file__).resolve().parents[1]
     directory = Path(
-        os.environ.get("LEARNING_DATA_DIR")
+        environment_value("LEARNING_DATA_DIR")
         or project_root / "data" / "learning"
     )
     return directory if directory.is_absolute() else project_root / directory
