@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "655da9a9-8f32-4e20-8019-cdf46e6af4cf",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\streamlit-user-journey.json",
+  "output": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\streamlit-user-journey.html",
+  "specification": {
+    "sha256": "c9c311f9b381df5528f57b97ba63015f62a19938e43b7e430a91f0c7c65d8804",
+    "bytes": 14716
+  },
+  "artifact": {
+    "sha256": "c436af51d51addd6a0070435a846fb07663f6293a9d7f1d37c3a25081a71fcf0",
+    "bytes": 784219
+  }
+}

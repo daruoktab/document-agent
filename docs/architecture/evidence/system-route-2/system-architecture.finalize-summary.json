@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\system-architecture.json",
+    "sha256": "d29f7d5758253c882f5be30ed16781c3c1ae2761c8bdea522e28f555d4475dcf",
+    "bytes": 10169
+  },
+  "artifact": {
+    "path": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\system-architecture.html",
+    "sha256": "a8123a42fac0768ac4f8f814da8543fdd9ab835c4c58c2ad135f4809da1d0967",
+    "bytes": 768151
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\evidence\\system-route-2\\system-architecture.finalize.json",
+    "summaryReceipt": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\evidence\\system-route-2\\system-architecture.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\evidence\\system-route-2\\system-architecture.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.0.1",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-01T02:35:57.041Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4062,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedBends": 1,
+      "routesOverSuggestedStretch": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "workspace-corrections",
+            "from": "workspace",
+            "to": "corrections",
+            "label": "koreksi halaman",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "bends": 4,
+          "stretch": 1.418
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "workspace → corrections needs 4 bends: move node workspace or corrections so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

@@ -1,0 +1,601 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Streamlit — dari unggahan sampai hasil",
+    "output": "docs/architecture/streamlit-user-journey.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/daruoktab/jds-magang-ocr-agent.git",
+      "provider": "github",
+      "link_mode": "local-only",
+      "revision": "cfa10b8fe1e5a03ac2992a84662d9dcdfafc2cdb"
+    }
+  },
+  "lanes": [
+    {
+      "id": "start",
+      "label": "1 · Pilih dokumen dan mulai"
+    },
+    {
+      "id": "monitor",
+      "label": "2 · Pantau pekerjaan"
+    },
+    {
+      "id": "review",
+      "label": "3 · Tinjau dan gunakan hasil"
+    },
+    {
+      "id": "history",
+      "label": "4 · Kembali ke histori"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "dashboard",
+      "lane": "start",
+      "col": 0,
+      "type": "frontend",
+      "label": "Dashboard",
+      "sublabel": "Ringkasan workspace",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2540,
+          "end_line": 2551,
+          "label": "halaman dashboard"
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "lane": "start",
+      "col": 1,
+      "type": "frontend",
+      "label": "Pengaturan",
+      "sublabel": "Bentuk dokumen & opsi",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2508,
+          "end_line": 2532,
+          "label": "sidebar ekstraksi"
+        }
+      ]
+    },
+    {
+      "id": "upload",
+      "lane": "start",
+      "col": 2,
+      "type": "frontend",
+      "label": "Upload",
+      "sublabel": "File atau folder",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 570,
+          "end_line": 609,
+          "label": "unggahan"
+        }
+      ]
+    },
+    {
+      "id": "queue",
+      "lane": "start",
+      "col": 3,
+      "type": "frontend",
+      "label": "Tinjau antrean",
+      "sublabel": "Prioritas & nama batch",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 611,
+          "end_line": 655,
+          "label": "antrean unggahan"
+        }
+      ]
+    },
+    {
+      "id": "start-job",
+      "lane": "start",
+      "col": 4,
+      "type": "frontend",
+      "label": "Mulai ekstraksi",
+      "sublabel": "Satu atau banyak file",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 656,
+          "end_line": 683,
+          "label": "mulai pekerjaan"
+        }
+      ]
+    },
+    {
+      "id": "waiting",
+      "lane": "start",
+      "col": 5,
+      "type": "messagebus",
+      "label": "Menunggu slot",
+      "sublabel": "Antrean pekerjaan",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/job_tracker.py",
+          "line": 440,
+          "end_line": 477,
+          "label": "slot eksekusi"
+        }
+      ]
+    },
+    {
+      "id": "live",
+      "lane": "monitor",
+      "col": 5,
+      "type": "frontend",
+      "label": "Monitor dokumen",
+      "sublabel": "Progres, preview & log",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1790,
+          "end_line": 1924,
+          "label": "monitor pekerjaan"
+        }
+      ]
+    },
+    {
+      "id": "pause",
+      "lane": "monitor",
+      "col": 4,
+      "type": "frontend",
+      "label": "Jeda / lanjutkan",
+      "sublabel": "Saat pekerjaan aktif",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1852,
+          "end_line": 1877,
+          "label": "kontrol jeda"
+        }
+      ],
+      "yOffset": -72
+    },
+    {
+      "id": "cancel",
+      "lane": "monitor",
+      "col": 4,
+      "type": "frontend",
+      "label": "Batalkan / ulang",
+      "sublabel": "Batal atau gagal",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 730,
+          "end_line": 749,
+          "label": "gagal dan ulang"
+        },
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1878,
+          "end_line": 1887,
+          "label": "pembatalan"
+        }
+      ],
+      "yOffset": 72
+    },
+    {
+      "id": "finished",
+      "lane": "monitor",
+      "col": 3,
+      "type": "frontend",
+      "label": "Hasil selesai",
+      "sublabel": "Buka tab peninjauan",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 719,
+          "end_line": 730,
+          "label": "status selesai"
+        }
+      ]
+    },
+    {
+      "id": "compare",
+      "lane": "review",
+      "col": 0,
+      "type": "frontend",
+      "label": "Cocokkan sumber",
+      "sublabel": "Gambar vs teks halaman",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2012,
+          "end_line": 2135,
+          "label": "inspeksi visual"
+        }
+      ]
+    },
+    {
+      "id": "complete",
+      "lane": "review",
+      "col": 1,
+      "type": "frontend",
+      "label": "Periksa kelengkapan",
+      "sublabel": "Konsistensi data tabel",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2141,
+          "end_line": 2191,
+          "label": "laporan konsistensi"
+        }
+      ]
+    },
+    {
+      "id": "text",
+      "lane": "review",
+      "col": 2,
+      "type": "frontend",
+      "label": "Baca dan unduh teks",
+      "sublabel": "Cari teks & lihat diagram",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2197,
+          "end_line": 2244,
+          "label": "teks dan Mermaid"
+        }
+      ]
+    },
+    {
+      "id": "tables",
+      "lane": "review",
+      "col": 3,
+      "type": "frontend",
+      "label": "Lihat tabel & grafik",
+      "sublabel": "CSV, SQL & grafik",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2250,
+          "end_line": 2441,
+          "label": "studio tabel"
+        }
+      ]
+    },
+    {
+      "id": "logs",
+      "lane": "review",
+      "col": 4,
+      "type": "frontend",
+      "label": "Detail proses",
+      "sublabel": "Log dan unduhannya",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2445,
+          "end_line": 2470,
+          "label": "detail proses"
+        }
+      ]
+    },
+    {
+      "id": "zip",
+      "lane": "review",
+      "col": 5,
+      "type": "frontend",
+      "label": "Unduh ZIP hasil",
+      "sublabel": "Paket hasil dokumen",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1975,
+          "end_line": 1997,
+          "label": "ZIP dokumen"
+        }
+      ]
+    },
+    {
+      "id": "correct",
+      "lane": "history",
+      "col": 0,
+      "type": "frontend",
+      "label": "Koreksi halaman",
+      "sublabel": "Simpan bahan evaluasi",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/learning_ui.py",
+          "line": 12,
+          "end_line": 82,
+          "label": "koreksi terpisah"
+        }
+      ]
+    },
+    {
+      "id": "history-list",
+      "lane": "history",
+      "col": 5,
+      "type": "frontend",
+      "label": "Histori",
+      "sublabel": "Cari nama & filter status",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 448,
+          "end_line": 502,
+          "label": "histori dokumen"
+        }
+      ]
+    },
+    {
+      "id": "batch",
+      "lane": "history",
+      "col": 4,
+      "type": "frontend",
+      "label": "Buka batch",
+      "sublabel": "Monitor atau unduh",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 430,
+          "end_line": 446,
+          "label": "buka batch"
+        },
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1440,
+          "end_line": 1538,
+          "label": "kelola & unduh batch"
+        }
+      ]
+    },
+    {
+      "id": "reopen",
+      "lane": "history",
+      "col": 3,
+      "type": "frontend",
+      "label": "Buka dokumen",
+      "sublabel": "Lihat hasil / ulang",
+      "width": 140,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 493,
+          "end_line": 502,
+          "label": "buka dokumen"
+        },
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1994,
+          "end_line": 1997,
+          "label": "ekstrak ulang"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "dashboard-settings",
+      "from": "dashboard",
+      "to": "settings",
+      "variant": "emphasis"
+    },
+    {
+      "id": "settings-upload",
+      "from": "settings",
+      "to": "upload",
+      "variant": "emphasis"
+    },
+    {
+      "id": "upload-queue",
+      "from": "upload",
+      "to": "queue",
+      "variant": "emphasis"
+    },
+    {
+      "id": "queue-start-job",
+      "from": "queue",
+      "to": "start-job",
+      "variant": "emphasis"
+    },
+    {
+      "id": "start-job-waiting",
+      "from": "start-job",
+      "to": "waiting",
+      "variant": "emphasis"
+    },
+    {
+      "id": "waiting-live",
+      "from": "waiting",
+      "to": "live",
+      "label": "slot tersedia",
+      "variant": "emphasis"
+    },
+    {
+      "id": "live-pause",
+      "from": "live",
+      "to": "pause",
+      "label": "jeda",
+      "variant": "dashed"
+    },
+    {
+      "id": "pause-live",
+      "from": "pause",
+      "to": "live",
+      "label": "lanjut",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "live-cancel",
+      "from": "live",
+      "to": "cancel",
+      "label": "batal / gagal",
+      "variant": "dashed"
+    },
+    {
+      "id": "cancel-start-job",
+      "from": "cancel",
+      "to": "start-job",
+      "label": "ekstrak ulang",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "live-finished",
+      "from": "live",
+      "to": "finished",
+      "label": "selesai",
+      "variant": "emphasis"
+    },
+    {
+      "id": "finished-compare",
+      "from": "finished",
+      "to": "compare",
+      "label": "periksa hasil",
+      "variant": "emphasis"
+    },
+    {
+      "id": "compare-complete",
+      "from": "compare",
+      "to": "complete",
+      "variant": "default"
+    },
+    {
+      "id": "complete-text",
+      "from": "complete",
+      "to": "text",
+      "variant": "default"
+    },
+    {
+      "id": "text-tables",
+      "from": "text",
+      "to": "tables",
+      "variant": "default"
+    },
+    {
+      "id": "tables-logs",
+      "from": "tables",
+      "to": "logs",
+      "variant": "default"
+    },
+    {
+      "id": "logs-zip",
+      "from": "logs",
+      "to": "zip",
+      "variant": "emphasis"
+    },
+    {
+      "id": "compare-correct",
+      "from": "compare",
+      "to": "correct",
+      "label": "koreksi opsional",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "zip-history-list",
+      "from": "zip",
+      "to": "history-list",
+      "label": "kembali",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "history-list-batch",
+      "from": "history-list",
+      "to": "batch",
+      "label": "batch",
+      "variant": "default"
+    },
+    {
+      "id": "batch-reopen",
+      "from": "batch",
+      "to": "reopen",
+      "label": "buka",
+      "variant": "default"
+    },
+    {
+      "id": "history-list-reopen",
+      "from": "history-list",
+      "to": "reopen",
+      "label": "dokumen tunggal",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "route": "bottom-channel"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pilihan awal",
+      "items": [
+        "Bentuk dokumen: otomatis (disarankan) atau empat profil manual: umum, bab/subbab, jurnal multikolom/dua bahasa, presentasi.",
+        "Percakapan dan formulir tanda tangan termasuk kemampuan klasifikasi sistem, tetapi belum menjadi pilihan manual di sidebar.",
+        "Pengaturan lanjutan: ketajaman gambar 100–300 DPI dan opsi menyimpan semua jenis tabel. Folder dan subfolder digabung menjadi batch; struktur folder tidak dipertahankan."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Pantau dan tinjau",
+      "items": [
+        "Pekerjaan berjalan di background. Preview halaman yang sudah selesai dapat dilihat sebelum seluruh dokumen selesai; hasil akhir masih dapat berubah.",
+        "Prioritas bisa diubah saat menunggu. Jeda, lanjutkan, batal, serta ekstrak ulang tersedia sesuai status pekerjaan.",
+        "Lima tab hasil dapat dibuka dalam urutan apa pun. Panah antar-tab menunjukkan urutan peninjauan yang disarankan, bukan langkah wajib."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Gunakan hasil dan histori",
+      "items": [
+        "Tab sumber menampilkan halaman/slide atau preview sheet. Koreksi halaman yang tersedia disimpan terpisah sebagai draft atau bahan evaluasi.",
+        "Unduh Markdown, gambar/diagram, CSV, database/dump SQL, log, atau ZIP sesuai artefak yang tersedia. Studio tabel menyediakan grafik, query SELECT, dan pembersihan data ganda.",
+        "Histori: cari dan filter status, buka dokumen atau batch, unduh hasil kelompok, serta hapus file/batch melalui konfirmasi UI. Optimasi prompt tidak dijalankan dari formulir koreksi."
+      ]
+    }
+  ]
+}

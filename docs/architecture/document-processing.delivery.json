@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "36b885c3-c73f-4a27-98f1-05b48986bfcb",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\document-processing.json",
+  "output": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\document-processing.html",
+  "specification": {
+    "sha256": "d3059a1d65850340fd1aafc61700fda0b57caab5cc5c1cd9314434995f1db5c7",
+    "bytes": 16817
+  },
+  "artifact": {
+    "sha256": "8b759d62c230c5c7804006d1cf364051fd95de44649b5e80fb4771c7ea6a4217",
+    "bytes": 782415
+  }
+}

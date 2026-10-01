@@ -1,0 +1,716 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Dari dokumen ke hasil — proses lengkap main",
+    "output": "docs/architecture/document-processing.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/daruoktab/jds-magang-ocr-agent.git",
+      "provider": "github",
+      "link_mode": "local-only",
+      "revision": "cfa10b8fe1e5a03ac2992a84662d9dcdfafc2cdb"
+    }
+  },
+  "lanes": [
+    {
+      "id": "prepare",
+      "label": "1 · Siapkan dokumen sesuai format"
+    },
+    {
+      "id": "read",
+      "label": "2 · Baca dan periksa setiap halaman / region"
+    },
+    {
+      "id": "finish",
+      "label": "3 · Satukan dan simpan hasil dokumen"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "source",
+      "lane": "prepare",
+      "col": 0,
+      "type": "external",
+      "label": "Dokumen masuk",
+      "sublabel": "PDF, Office atau gambar",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "main.py",
+          "line": 287,
+          "end_line": 299,
+          "label": "validasi sumber"
+        }
+      ]
+    },
+    {
+      "id": "dispatch",
+      "lane": "prepare",
+      "col": 1,
+      "type": "backend",
+      "label": "Pilih jalur format",
+      "sublabel": "Halaman, slide atau sheet",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "main.py",
+          "line": 346,
+          "end_line": 449,
+          "label": "pemroses format"
+        }
+      ]
+    },
+    {
+      "id": "native",
+      "lane": "prepare",
+      "col": 2,
+      "type": "backend",
+      "label": "Survei Excel native",
+      "sublabel": "Sel, formula & grafik",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/excel.py",
+          "line": 3230,
+          "end_line": 3309,
+          "label": "survei dan rencana visual"
+        }
+      ],
+      "yOffset": -72
+    },
+    {
+      "id": "render",
+      "lane": "prepare",
+      "col": 2,
+      "type": "backend",
+      "label": "Render / konversi",
+      "sublabel": "Gambar per unit visual",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/pdf.py",
+          "line": 91,
+          "end_line": 170,
+          "label": "render PDF"
+        },
+        {
+          "path": "app/excel.py",
+          "line": 3290,
+          "end_line": 3364,
+          "label": "render region Excel"
+        }
+      ],
+      "yOffset": 72
+    },
+    {
+      "id": "preprocess",
+      "lane": "prepare",
+      "col": 3,
+      "type": "backend",
+      "label": "Praproses citra",
+      "sublabel": "Siapkan gambar halaman",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 323,
+          "end_line": 346,
+          "label": "praproses"
+        }
+      ]
+    },
+    {
+      "id": "inspect",
+      "lane": "prepare",
+      "col": 4,
+      "type": "cloud",
+      "label": "Inspeksi VLM",
+      "sublabel": "Profil, visual & orientasi",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 348,
+          "end_line": 414,
+          "label": "inspeksi dan rescue"
+        }
+      ]
+    },
+    {
+      "id": "orient",
+      "lane": "prepare",
+      "col": 5,
+      "type": "backend",
+      "label": "Tegakkan halaman",
+      "sublabel": "Rotasi hasil inspeksi",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 416,
+          "end_line": 429,
+          "label": "normalisasi orientasi"
+        }
+      ]
+    },
+    {
+      "id": "ocr-call",
+      "lane": "read",
+      "col": 5,
+      "type": "cloud",
+      "label": "OCR opsional",
+      "sublabel": "Draft, bbox & crop",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 431,
+          "end_line": 471,
+          "label": "OCR dan region"
+        },
+        {
+          "path": "app/paddle_ocr.py",
+          "line": 263,
+          "end_line": 329,
+          "label": "blank gate dan retry"
+        }
+      ]
+    },
+    {
+      "id": "quality",
+      "lane": "read",
+      "col": 4,
+      "type": "security",
+      "label": "Nilai kualitas",
+      "sublabel": "Trust + bukti native",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/ocr.py",
+          "line": 112,
+          "end_line": 216,
+          "label": "quality score"
+        },
+        {
+          "path": "app/graph.py",
+          "line": 473,
+          "end_line": 578,
+          "label": "pilihan draft"
+        }
+      ]
+    },
+    {
+      "id": "ocr-draft",
+      "lane": "read",
+      "col": 3,
+      "type": "backend",
+      "label": "Draft OCR",
+      "sublabel": "Trust tinggi, tanpa rescue",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 495,
+          "end_line": 534,
+          "label": "draft & TextReflow"
+        }
+      ],
+      "yOffset": -72
+    },
+    {
+      "id": "vlm-read",
+      "lane": "read",
+      "col": 3,
+      "type": "cloud",
+      "label": "Baca ulang VLM",
+      "sublabel": "OCR gagal / visual sulit",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 535,
+          "end_line": 570,
+          "label": "fallback, rescue, tabel"
+        }
+      ],
+      "yOffset": 72
+    },
+    {
+      "id": "assemble",
+      "lane": "read",
+      "col": 2,
+      "type": "backend",
+      "label": "Tentukan draft",
+      "sublabel": "Jaga tabel lebih lengkap",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 541,
+          "end_line": 558,
+          "label": "pilihan tabel lengkap"
+        }
+      ]
+    },
+    {
+      "id": "visuals",
+      "lane": "read",
+      "col": 1,
+      "type": "backend",
+      "label": "Spesialis visual",
+      "sublabel": "Jika ada indikator visual",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 584,
+          "end_line": 667,
+          "label": "spesialis sesuai indikator"
+        }
+      ]
+    },
+    {
+      "id": "audit",
+      "lane": "read",
+      "col": 0,
+      "type": "security",
+      "label": "Gabung & periksa",
+      "sublabel": "Judge sesuai kondisi",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 669,
+          "end_line": 848,
+          "label": "judge dan pengecualian"
+        }
+      ]
+    },
+    {
+      "id": "save-page",
+      "lane": "finish",
+      "col": 1,
+      "type": "database",
+      "label": "Simpan per halaman",
+      "sublabel": "Progres & checkpoint",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/pdf.py",
+          "line": 413,
+          "end_line": 444,
+          "label": "checkpoint"
+        },
+        {
+          "path": "app/pdf.py",
+          "line": 485,
+          "end_line": 585,
+          "label": "ekstraksi dan progres"
+        }
+      ]
+    },
+    {
+      "id": "next-page",
+      "lane": "finish",
+      "col": 2,
+      "type": "backend",
+      "label": "Lanjutkan unit",
+      "sublabel": "Konteks antarhalaman",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/pdf.py",
+          "line": 446,
+          "end_line": 485,
+          "label": "batch halaman"
+        },
+        {
+          "path": "app/pdf.py",
+          "line": 485,
+          "end_line": 585,
+          "label": "konteks halaman"
+        }
+      ]
+    },
+    {
+      "id": "stitch",
+      "lane": "finish",
+      "col": 3,
+      "type": "backend",
+      "label": "Satukan dokumen",
+      "sublabel": "Halaman / slide / sheet",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/multi_page.py",
+          "line": 327,
+          "end_line": 414,
+          "label": "penyatuan Markdown"
+        },
+        {
+          "path": "app/excel.py",
+          "line": 2720,
+          "end_line": 2753,
+          "label": "komposisi workbook"
+        }
+      ]
+    },
+    {
+      "id": "table-store",
+      "lane": "finish",
+      "col": 0,
+      "type": "backend",
+      "label": "Simpan data tabel",
+      "sublabel": "Saat ada tabel terpilih",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/pdf.py",
+          "line": 500,
+          "end_line": 615,
+          "label": "ingest per halaman"
+        },
+        {
+          "path": "app/excel.py",
+          "line": 2875,
+          "end_line": 2920,
+          "label": "native workbook"
+        }
+      ]
+    },
+    {
+      "id": "crosscheck",
+      "lane": "finish",
+      "col": 4,
+      "type": "security",
+      "label": "Periksa konsistensi",
+      "sublabel": "Markdown vs SQLite",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/pdf.py",
+          "line": 596,
+          "end_line": 615,
+          "label": "audit akhir PDF"
+        },
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2141,
+          "end_line": 2191,
+          "label": "laporan UI"
+        }
+      ]
+    },
+    {
+      "id": "result",
+      "lane": "finish",
+      "col": 5,
+      "type": "external",
+      "label": "Hasil siap ditinjau",
+      "sublabel": "Teks, data, visual & ZIP",
+      "width": 150,
+      "height": 64,
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 1938,
+          "end_line": 2010,
+          "label": "hasil dan ZIP"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "source-dispatch",
+      "from": "source",
+      "to": "dispatch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "dispatch-native",
+      "from": "dispatch",
+      "to": "native",
+      "label": "Excel",
+      "variant": "dashed"
+    },
+    {
+      "id": "dispatch-render",
+      "from": "dispatch",
+      "to": "render",
+      "label": "format lain",
+      "variant": "emphasis"
+    },
+    {
+      "id": "native-render",
+      "from": "native",
+      "to": "render",
+      "label": "perlu visual",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "render-preprocess",
+      "from": "render",
+      "to": "preprocess",
+      "variant": "emphasis"
+    },
+    {
+      "id": "preprocess-inspect",
+      "from": "preprocess",
+      "to": "inspect",
+      "variant": "emphasis"
+    },
+    {
+      "id": "inspect-orient",
+      "from": "inspect",
+      "to": "orient",
+      "variant": "emphasis"
+    },
+    {
+      "id": "orient-ocr-call",
+      "from": "orient",
+      "to": "ocr-call",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ocr-call-quality",
+      "from": "ocr-call",
+      "to": "quality",
+      "variant": "emphasis"
+    },
+    {
+      "id": "quality-ocr-draft",
+      "from": "quality",
+      "to": "ocr-draft",
+      "label": "dipercaya",
+      "variant": "emphasis"
+    },
+    {
+      "id": "quality-vlm-read",
+      "from": "quality",
+      "to": "vlm-read",
+      "label": "fallback / rescue",
+      "variant": "dashed"
+    },
+    {
+      "id": "ocr-draft-assemble",
+      "from": "ocr-draft",
+      "to": "assemble",
+      "variant": "emphasis"
+    },
+    {
+      "id": "vlm-read-assemble",
+      "from": "vlm-read",
+      "to": "assemble",
+      "variant": "dashed"
+    },
+    {
+      "id": "assemble-visuals",
+      "from": "assemble",
+      "to": "visuals",
+      "variant": "emphasis"
+    },
+    {
+      "id": "visuals-audit",
+      "from": "visuals",
+      "to": "audit",
+      "variant": "emphasis"
+    },
+    {
+      "id": "quality-save-page",
+      "from": "quality",
+      "to": "save-page",
+      "label": "halaman kosong",
+      "variant": "dashed",
+      "role": "branch",
+      "toSide": "top",
+      "fromSide": "bottom",
+      "via": [
+        [
+          815,
+          620
+        ],
+        [
+          301,
+          620
+        ]
+      ],
+      "labelAt": [
+        560,
+        605
+      ]
+    },
+    {
+      "id": "next-page-preprocess",
+      "from": "next-page",
+      "to": "preprocess",
+      "label": "unit berikutnya",
+      "variant": "dashed",
+      "role": "return",
+      "toSide": "top",
+      "fromSide": "left",
+      "via": [
+        [
+          388,
+          722
+        ],
+        [
+          388,
+          635
+        ],
+        [
+          1150,
+          635
+        ],
+        [
+          1150,
+          34
+        ],
+        [
+          637,
+          34
+        ]
+      ],
+      "labelAt": [
+        980,
+        650
+      ]
+    },
+    {
+      "id": "crosscheck-result",
+      "from": "crosscheck",
+      "to": "result",
+      "variant": "emphasis"
+    },
+    {
+      "id": "audit-table-store",
+      "from": "audit",
+      "to": "table-store",
+      "variant": "emphasis"
+    },
+    {
+      "id": "table-store-save-page",
+      "from": "table-store",
+      "to": "save-page",
+      "variant": "emphasis"
+    },
+    {
+      "id": "save-page-next-page",
+      "from": "save-page",
+      "to": "next-page",
+      "variant": "emphasis"
+    },
+    {
+      "id": "next-page-stitch",
+      "from": "next-page",
+      "to": "stitch",
+      "label": "tuntas",
+      "variant": "emphasis",
+      "toSide": "top",
+      "fromSide": "top",
+      "via": [
+        [
+          479,
+          658
+        ],
+        [
+          637,
+          658
+        ]
+      ],
+      "labelAt": [
+        558,
+        675
+      ]
+    },
+    {
+      "id": "native-stitch",
+      "from": "native",
+      "to": "stitch",
+      "label": "native tanpa visual",
+      "variant": "dashed",
+      "role": "branch",
+      "toSide": "bottom",
+      "fromSide": "top",
+      "via": [
+        [
+          479,
+          34
+        ],
+        [
+          24,
+          34
+        ],
+        [
+          24,
+          790
+        ],
+        [
+          637,
+          790
+        ]
+      ],
+      "labelAt": [
+        320,
+        808
+      ]
+    },
+    {
+      "id": "stitch-crosscheck",
+      "from": "stitch",
+      "to": "crosscheck",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Format dan bukti yang dipakai",
+      "items": [
+        "PDF: halaman dirender bertahap, dengan text-layer sebagai bukti bila tersedia. Word: konversi ke PDF. PowerPoint: render per slide; jalur native tersedia melalui CLI.",
+        "Excel: sumber angka, formula, dan grafik berasal dari workbook. Dashboard/gambar atau region campuran dirender; jika survei gagal, gunakan render seluruh sheet. Jalur native dapat selesai tanpa panggilan VLM."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Keputusan OCR dan visual",
+      "items": [
+        "Halaman kosong dihentikan dari pembacaan isi. OCR tidak tersedia, gagal, atau tidak dipercaya: VLM membaca langsung dari gambar.",
+        "OCR trust rendah dan retry aktif: coba rotasi 90/180/270°, lalu pilih kandidat terbaik. Di main, retry juga dapat terjadi setelah hasil OCR error.",
+        "Draft OCR yang dipercaya dapat ditata ulang dari region. Visual rescue aktif memaksa pembacaan VLM; tabel OCR yang lebih lengkap dapat tetap dipertahankan."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Spesialis, judge dan penyimpanan",
+      "items": [
+        "Spesialis dipanggil jika ada indikator visual/crop. Flowchart menjadi Mermaid yang diperiksa; visual lain menjadi deskripsi terstruktur.",
+        "Judge dilewati: halaman kosong; tabel OCR panjang (≥20 baris) tanpa Mermaid; atau fast-path bersih yang memenuhi syarat. Pengecualian tabel panjang berlaku juga pada mode thorough di main.",
+        "PDF menyimpan tabel dan checkpoint per halaman sebelum stitching. Workbook menyimpan data native dan menggabungkan hasil per sheet. Audit akhir tersedia pada jalur PDF dan dihitung lagi saat tab pemeriksaan dibuka."
+      ]
+    }
+  ]
+}

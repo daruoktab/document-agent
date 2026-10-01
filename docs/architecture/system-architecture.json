@@ -1,0 +1,440 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Pengolah Dokumen AI — arsitektur main",
+    "output": "docs/architecture/system-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/daruoktab/jds-magang-ocr-agent.git",
+      "provider": "github",
+      "link_mode": "local-only",
+      "revision": "cfa10b8fe1e5a03ac2992a84662d9dcdfafc2cdb"
+    }
+  },
+  "components": [
+    {
+      "id": "files",
+      "type": "external",
+      "label": "Dokumen sumber",
+      "sublabel": "PDF · Office · gambar",
+      "pos": [
+        35,
+        80
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 64,
+          "end_line": 79,
+          "label": "format unggahan"
+        }
+      ]
+    },
+    {
+      "id": "workspace",
+      "type": "frontend",
+      "label": "Workspace Streamlit",
+      "sublabel": "Unggah, pantau, periksa hasil",
+      "pos": [
+        365,
+        80
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2474,
+          "end_line": 2562,
+          "label": "alur workspace"
+        }
+      ]
+    },
+    {
+      "id": "jobs",
+      "type": "backend",
+      "label": "Pengelola pekerjaan",
+      "sublabel": "Antrean, kontrol & progres",
+      "pos": [
+        695,
+        80
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/job_tracker.py",
+          "line": 220,
+          "end_line": 303,
+          "label": "membuat pekerjaan"
+        },
+        {
+          "path": "app/job_tracker.py",
+          "line": 308,
+          "end_line": 346,
+          "label": "worker CLI"
+        }
+      ]
+    },
+    {
+      "id": "formats",
+      "type": "backend",
+      "label": "Orkestrasi dokumen",
+      "sublabel": "Halaman, slide & sheet",
+      "pos": [
+        695,
+        310
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "main.py",
+          "line": 346,
+          "end_line": 449,
+          "label": "dispatch per format"
+        },
+        {
+          "path": "app/excel.py",
+          "line": 3230,
+          "end_line": 3420,
+          "label": "Excel native & visual"
+        }
+      ],
+      "tag": "Excel mengutamakan data native"
+    },
+    {
+      "id": "pages",
+      "type": "backend",
+      "label": "Pipeline per halaman",
+      "sublabel": "Inspeksi → draft → pemeriksaan",
+      "pos": [
+        365,
+        310
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 215,
+          "end_line": 237,
+          "label": "alur LangGraph"
+        },
+        {
+          "path": "app/graph.py",
+          "line": 584,
+          "end_line": 848,
+          "label": "diagram dan pemeriksaan"
+        }
+      ],
+      "tag": "Profil layout dapat digabung"
+    },
+    {
+      "id": "ocr",
+      "type": "external",
+      "label": "PaddleOCR-VL 1.6",
+      "sublabel": "Layout, draft & crop region",
+      "pos": [
+        365,
+        540
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/graph.py",
+          "line": 188,
+          "end_line": 213,
+          "label": "OCR opsional"
+        },
+        {
+          "path": "app/paddle_ocr.py",
+          "line": 162,
+          "end_line": 184,
+          "label": "layout lokal, recognizer server"
+        }
+      ],
+      "tag": "Aktif jika OCR dikonfigurasi"
+    },
+    {
+      "id": "vlm",
+      "type": "external",
+      "label": "VLM utama",
+      "sublabel": "Inspeksi, rescue & judge",
+      "pos": [
+        35,
+        310
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/llm.py",
+          "line": 155,
+          "end_line": 167,
+          "label": "client VLM"
+        },
+        {
+          "path": "app/graph.py",
+          "line": 348,
+          "end_line": 414,
+          "label": "pemahaman visual"
+        }
+      ],
+      "tag": "Satu VLM pada main"
+    },
+    {
+      "id": "artifacts",
+      "type": "database",
+      "label": "Hasil dokumen",
+      "sublabel": "Markdown, gambar & checkpoint",
+      "pos": [
+        695,
+        540
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/pdf.py",
+          "line": 386,
+          "end_line": 444,
+          "label": "hasil bertahap dan checkpoint"
+        },
+        {
+          "path": "app/excel.py",
+          "line": 3425,
+          "end_line": 3469,
+          "label": "komposisi workbook"
+        }
+      ]
+    },
+    {
+      "id": "tabular",
+      "type": "backend",
+      "label": "Pengolahan tabel",
+      "sublabel": "Ingest & verifikasi data",
+      "pos": [
+        1025,
+        310
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/tabular_db.py",
+          "line": 2250,
+          "end_line": 2340,
+          "label": "tabel per halaman"
+        },
+        {
+          "path": "app/excel.py",
+          "line": 2875,
+          "end_line": 2915,
+          "label": "data native workbook"
+        }
+      ]
+    },
+    {
+      "id": "database",
+      "type": "database",
+      "label": "SQLite dokumen",
+      "sublabel": "Data tabel & ekspor",
+      "pos": [
+        1025,
+        540
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/tabular_db.py",
+          "line": 1374,
+          "end_line": 1405,
+          "label": "penyimpanan relasional"
+        },
+        {
+          "path": "app/streamlit_logic.py",
+          "line": 2250,
+          "end_line": 2441,
+          "label": "tabel, CSV, SQL & grafik"
+        }
+      ]
+    },
+    {
+      "id": "corrections",
+      "type": "database",
+      "label": "Koreksi pengguna",
+      "sublabel": "Bahan evaluasi terpisah",
+      "pos": [
+        35,
+        540
+      ],
+      "size": [
+        210,
+        76
+      ],
+      "sources": [
+        {
+          "path": "app/learning_ui.py",
+          "line": 12,
+          "end_line": 82,
+          "label": "form koreksi"
+        },
+        {
+          "path": "app/learning_store.py",
+          "line": 32,
+          "end_line": 70,
+          "label": "penyimpanan evaluasi"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "files-workspace",
+      "from": "files",
+      "to": "workspace",
+      "label": "unggah",
+      "variant": "emphasis"
+    },
+    {
+      "id": "workspace-jobs",
+      "from": "workspace",
+      "to": "jobs",
+      "label": "mulai",
+      "variant": "emphasis"
+    },
+    {
+      "id": "jobs-formats",
+      "from": "jobs",
+      "to": "formats",
+      "label": "worker CLI",
+      "variant": "emphasis"
+    },
+    {
+      "id": "formats-pages",
+      "from": "formats",
+      "to": "pages",
+      "label": "gambar + konteks",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pages-vlm",
+      "from": "pages",
+      "to": "vlm",
+      "label": "permintaan visual",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pages-ocr",
+      "from": "pages",
+      "to": "ocr",
+      "label": "OCR opsional",
+      "variant": "dashed"
+    },
+    {
+      "id": "formats-artifacts",
+      "from": "formats",
+      "to": "artifacts",
+      "label": "simpan hasil",
+      "variant": "emphasis"
+    },
+    {
+      "id": "formats-tabular",
+      "from": "formats",
+      "to": "tabular",
+      "label": "tabel",
+      "variant": "default"
+    },
+    {
+      "id": "tabular-database",
+      "from": "tabular",
+      "to": "database",
+      "label": "simpan",
+      "variant": "default"
+    },
+    {
+      "id": "workspace-corrections",
+      "from": "workspace",
+      "to": "corrections",
+      "label": "koreksi halaman",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          470,
+          40
+        ],
+        [
+          15,
+          40
+        ],
+        [
+          15,
+          500
+        ],
+        [
+          140,
+          500
+        ]
+      ],
+      "labelAt": [
+        250,
+        22
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Dokumen dan profil",
+      "items": [
+        "Format: PDF; DOC/DOCX; XLS/XLSX/XLSM/ODS; PPT/PPTX; PNG/JPG/JPEG/WebP.",
+        "Profil: umum, bab/subbab, multikolom/dua bahasa, presentasi, percakapan, formulir tanda tangan. Profil dapat dikombinasikan."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Ide utama pemrosesan",
+      "items": [
+        "OCR membuat draft dan region; VLM memeriksa visual serta membaca ulang saat diperlukan. OCR tidak aktif bila model belum dikonfigurasi.",
+        "Excel mempertahankan sel, formula, dan sumber grafik native; hanya bagian yang perlu pembacaan visual masuk pipeline. Angka tidak dikoreksi diam-diam."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Kemampuan melalui jalur tersendiri",
+      "items": [
+        "Deep Agent: master + 8 subagent memilih tool untuk layout, Markdown, diagram, presentasi, PDF, Word, Excel, dan tabel. Harness tersendiri, bukan worker default Streamlit.",
+        "MCP lokal menyediakan tool ekstraksi; MCP agent mengirim gambar kepada model pada aplikasi klien. Model klien tersebut dipilih di luar konfigurasi VLM lokal.",
+        "Koreksi tersimpan terpisah. Evaluasi dan optimasi prompt DSPy/GEPA dijalankan melalui CLI, lalu kandidat dapat diaktifkan; tidak mengubah bobot model."
+      ]
+    }
+  ]
+}

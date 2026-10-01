@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "d020577e-1d6d-4c15-96e3-64a222595313",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\system-architecture.json",
+  "output": "C:\\Users\\HYPE AMD\\Documents\\Coding\\jds-magang\\docs\\architecture\\system-architecture.html",
+  "specification": {
+    "sha256": "d29f7d5758253c882f5be30ed16781c3c1ae2761c8bdea522e28f555d4475dcf",
+    "bytes": 10169
+  },
+  "artifact": {
+    "sha256": "a8123a42fac0768ac4f8f814da8543fdd9ab835c4c58c2ad135f4809da1d0967",
+    "bytes": 768151
+  }
+}
