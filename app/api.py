@@ -9,12 +9,13 @@ import sqlite3
 import time
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from app.job_tracker import PROJECT_ROOT, JobInfo, JobManager
 
@@ -188,4 +189,128 @@ def ingest(
         archive,
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="hasil_ingest.zip"'},
+    )
+
+
+# ==============================================================================
+# RAG Injection & Retrieval API (Khusus Chatbot Eksternal)
+# ==============================================================================
+
+
+class RAGRetrieveRequest(BaseModel):
+    query: str = Field(..., description="Query pencarian semantik dari chatbot eksternal")
+    doc_stem: str = Field(default="document", description="Identifier dokumen yang dicari")
+    top_k: int = Field(default=4, ge=1, le=50, description="Jumlah chunk yang dikembalikan")
+    filter_metadata: dict[str, Any] | None = Field(
+        default=None, description="Filter metadata spesifik (mis. page_number, chapter)"
+    )
+
+
+class RAGRetrieveItem(BaseModel):
+    chunk_id: int | str
+    content: str
+    score: float
+    page_number: int | None = None
+    image_path: str | None = None
+    image_metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RAGRetrieveResponse(BaseModel):
+    query: str
+    doc_stem: str
+    total_results: int
+    results: list[RAGRetrieveItem]
+
+
+class RAGIndexRequest(BaseModel):
+    markdown_text: str = Field(..., description="Teks Markdown dokumen yang akan diindeks")
+    doc_stem: str = Field(default="document", description="Identifier dokumen")
+    chunk_size: int | None = Field(default=None, description="Ukuran karakter per chunk")
+    chunk_overlap: int | None = Field(default=None, description="Overlap karakter antar chunk")
+    page_images: dict[int, str] | dict[str, str] | list[str] | None = Field(
+        default=None,
+        description="Pemetaan nomor halaman -> path citra visual halaman, atau list path citra berurutan",
+    )
+
+
+class RAGIndexResponse(BaseModel):
+    status: str
+    doc_stem: str
+    total_chunks: int
+    multimodal_chunks: int
+    total_characters: int
+    persist_directory: str
+    backend: str
+    chunk_ids: list[str]
+
+
+@app.post(
+    "/rag/retrieve",
+    summary="Temu kembali konteks dokumen (Teks + Citra) untuk chatbot eksternal",
+    response_model=RAGRetrieveResponse,
+)
+def rag_retrieve(payload: RAGRetrieveRequest) -> RAGRetrieveResponse:
+    """
+    Endpoint retrieval semantik dokumen untuk dikonsumsi oleh sistem chatbot utama.
+    Mengembalikan potongan teks relevan, nomor halaman, dan path citra visual halaman.
+    """
+    from app.vector_store import query_document_knowledge_base
+
+    clean_stem = Path(payload.doc_stem).stem.strip() or "document"
+    results = query_document_knowledge_base(
+        query=payload.query,
+        doc_stem=clean_stem,
+        top_k=payload.top_k,
+        filter_metadata=payload.filter_metadata,
+    )
+    items = [
+        RAGRetrieveItem(
+            chunk_id=r.chunk_id,
+            content=r.content,
+            score=r.score,
+            page_number=r.page_number,
+            image_path=r.image_path,
+            image_metadata=r.image_metadata,
+            metadata=r.metadata,
+        )
+        for r in results
+    ]
+    return RAGRetrieveResponse(
+        query=payload.query,
+        doc_stem=clean_stem,
+        total_results=len(items),
+        results=items,
+    )
+
+
+@app.post(
+    "/rag/index",
+    summary="Injeksi & indexing dokumen Markdown ke persistent vector store",
+    response_model=RAGIndexResponse,
+)
+def rag_index(payload: RAGIndexRequest) -> RAGIndexResponse:
+    """
+    Endpoint injeksi dokumen ke vector database dokumen lokal.
+    Mendukung pemotongan hierarkis dan asosiasi citra halaman.
+    """
+    from app.vector_store import index_markdown_document
+
+    clean_stem = Path(payload.doc_stem).stem.strip() or "document"
+    res = index_markdown_document(
+        markdown_text=payload.markdown_text,
+        doc_stem=clean_stem,
+        chunk_size=payload.chunk_size,
+        chunk_overlap=payload.chunk_overlap,
+        page_images=payload.page_images,
+    )
+    return RAGIndexResponse(
+        status=res.get("status", "unknown"),
+        doc_stem=res.get("doc_stem", clean_stem),
+        total_chunks=res.get("total_chunks", 0),
+        multimodal_chunks=res.get("multimodal_chunks", 0),
+        total_characters=res.get("total_characters", 0),
+        persist_directory=res.get("persist_directory", ""),
+        backend=res.get("backend", ""),
+        chunk_ids=[str(c) for c in res.get("chunk_ids", []) if c is not None],
     )

@@ -38,11 +38,11 @@ from .graph import DocumentExtractionPipeline
 from .language_refiner import refine_audited_markdown
 from .llm import build_language_vlm, build_vlm
 from .model_runtime import ModelRuntime
-from .multi_page import preview_markdown_chunks
 from .pdf import process_multipage_pdf
 from .ppt import process_presentation_vision
 from .preprocess import preprocess_image
 from .prompts import MARKDOWN_LINE_BREAK_RULES, MERMAID_EXTRACTION_RULES
+from .rag import preview_markdown_chunks
 from .tabular_db import (
     ROW_ROLE_SQL_GUIDANCE,
     TabularDatabaseManager,
@@ -51,6 +51,12 @@ from .tabular_db import (
     extract_and_ingest_tables_from_markdown,
     parse_markdown_tables,
     query_sqlite,
+)
+from .vector_store import (
+    index_markdown_document as index_markdown_doc,
+)
+from .vector_store import (
+    query_document_knowledge_base as query_doc_kb,
 )
 
 
@@ -244,6 +250,80 @@ def build_deep_agent(
         return json.dumps(asdict(preview), indent=2, ensure_ascii=False)
 
     @tool
+    def retrieve_document_context(
+        query: str,
+        doc_stem: str | None = None,
+        top_k: int = 4,
+    ) -> str:
+        """Cari potongan teks, nomor halaman, dan referensi visual citra dari knowledge base dokumen (RAG retrieval) berdasarkan kemiripan semantik query. Tool ini murni untuk pencarian/retrieval konteks bukti dokumen, bukan antarmuka percakapan chatbot."""
+        target_stem = (
+            Path(doc_stem).stem
+            if doc_stem
+            else (Path(default_out_path).stem if default_out_path else "document")
+        )
+        results = query_doc_kb(
+            query=query,
+            doc_stem=target_stem,
+            top_k=top_k,
+            settings=resolved_settings,
+        )
+        return json.dumps(
+            [r.to_dict() if hasattr(r, "to_dict") else asdict(r) for r in results],
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    @tool
+    def search_document_chunks(
+        query: str,
+        doc_stem: str | None = None,
+        top_k: int = 4,
+    ) -> str:
+        """Cari potongan teks dan referensi citra visual dari knowledge base dokumen. (Alias untuk retrieve_document_context)."""
+        return retrieve_document_context.invoke(
+            {
+                "query": query,
+                "doc_stem": doc_stem,
+                "top_k": top_k,
+            }
+        )
+
+    @tool
+    def query_document_knowledge_base(
+        query: str,
+        doc_stem: str | None = None,
+        top_k: int = 4,
+    ) -> str:
+        """Cari potongan teks dan konteks yang relevan dari vector database dokumen (RAG Knowledge Base) berdasarkan kemiripan semantik query. (Alias untuk retrieve_document_context)."""
+        return retrieve_document_context.invoke(
+            {
+                "query": query,
+                "doc_stem": doc_stem,
+                "top_k": top_k,
+            }
+        )
+
+    @tool
+    def index_document_to_knowledge_base(
+        markdown_text: str,
+        doc_stem: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+    ) -> str:
+        """Pecah teks Markdown hasil ekstraksi dan indeks ke dalam vector database (RAG Knowledge Base) terisolasi per-dokumen."""
+        target_stem = doc_stem or (
+            Path(default_out_path).stem if default_out_path else "document"
+        )
+        res = index_markdown_doc(
+            markdown_text=markdown_text,
+            doc_stem=target_stem,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            settings=resolved_settings,
+        )
+        return json.dumps(res, indent=2, ensure_ascii=False)
+
+    @tool
     def classify_table_storage(markdown_text: str) -> str:
         """Analisis tabel-tabel pada teks Markdown untuk membedakan mana yang bertipe transaksional/finansial (layak SQLite) vs tabel naratif kualitatif."""
         tables = parse_markdown_tables(markdown_text)
@@ -311,7 +391,11 @@ def build_deep_agent(
             proc.processed_path, draft_markdown, specs=specs.split(",")
         )
         refined = audit.final_markdown
-        if language_vlm is not None and audit.action == "accepted" and runtime.dual_available():
+        if (
+            language_vlm is not None
+            and audit.action == "accepted"
+            and runtime.dual_available()
+        ):
             refined, _ = refine_audited_markdown(
                 llm=language_vlm,
                 draft_markdown=draft_markdown,
@@ -336,6 +420,11 @@ def build_deep_agent(
         query_sqlite_database,
         verify_table_data_integrity,
         judge_and_refine_markdown,
+        preview_chunks,
+        retrieve_document_context,
+        search_document_chunks,
+        query_document_knowledge_base,
+        index_document_to_knowledge_base,
     ]
 
     # --- Sub-Agent Definitions ---
@@ -472,7 +561,11 @@ def build_deep_agent(
         "3. Gabungkan hasil ekstraksi teks dengan blok Mermaid dan tabel.\n"
         "4. Lakukan tahap Judge / Koreksi Ulang ('judge_and_refine_markdown') untuk memverifikasi bahwa "
         "Markdown gabungan benar-benar merefleksikan seluruh isi visual dokumen tanpa ada yang terlewat.\n"
-        "5. Sajikan hasil ekstraksi akhir yang rapi, lengkap dengan laporan database SQLite dan blok kode Mermaid bila ada.\n\n"
+        "5. Sajikan hasil ekstraksi akhir yang rapi, lengkap dengan laporan database SQLite dan blok kode Mermaid bila ada.\n"
+        "6. RAG & Knowledge Base Retrieval:\n"
+        "   - Gunakan 'preview_chunks' untuk mensimulasikan pemotongan teks Markdown sebelum diindeks.\n"
+        "   - Gunakan 'index_document_to_knowledge_base' untuk menyimpan teks Markdown ke vector store dokumen terisolasi.\n"
+        "   - Gunakan 'query_document_knowledge_base' untuk mencari konteks relevan dari dokumen yang telah diindeks berdasarkan kemiripan semantik query.\n\n"
         "CATATAN PENTING:\n"
         "- Output Markdown dan database SQLite sudah dikonfigurasi oleh sistem berdasarkan flag CLI. "
         "Tool DOCX/Excel/PPT/PDF dan tabular akan otomatis menulis ke path tersebut.\n"

@@ -6,6 +6,7 @@ Menyediakan:
   - build_vlm(settings)  : vlm-vision-focus untuk pembacaan dan audit gambar
   - build_language_vlm(settings) : vlm-agent-focus untuk penalaran dan penyusunan teks
   - build_ocr(settings)  : model OCR terstruktur
+  - build_embeddings(settings) : model representasi vektor dokumen RAG
   - get_vlm(settings)    : Helper singleton / factory untuk VLM
   - encode_image, encode_image_to_base64, image_data_uri : utility encoding citra
 
@@ -24,7 +25,7 @@ from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from .config import Settings, get_settings
 
@@ -212,6 +213,21 @@ def build_ocr(settings: Settings | None = None) -> ChatOpenAI:
         max_tokens=resolved.ocr_max_tokens,
         callbacks=[LoggingCallbackHandler(resolved.ocr_model, resolved.ocr_base_url, "ocr")],
     )
+
+
+def build_embeddings(settings: Settings | None = None) -> OpenAIEmbeddings:
+    """Model embedding terstruktur untuk dokumen RAG menggunakan endpoint OpenAI-compatible."""
+    resolved = settings or get_settings()
+    params: dict[str, Any] = {
+        "model": resolved.embedding_model,
+        "base_url": resolved.embedding_base_url,
+        "api_key": resolved.embedding_api_key,
+        "timeout": resolved.embedding_timeout,
+        "check_embedding_ctx_length": False,
+    }
+    if resolved.embedding_dimensions is not None:
+        params["dimensions"] = resolved.embedding_dimensions
+    return OpenAIEmbeddings(**params)
 
 
 def get_vlm(settings: Settings | None = None) -> Any:

@@ -9,6 +9,7 @@ Peran Model:
   2. vlm-agent-focus  : penalaran agent dan penyusunan teks setelah audit visual
   3. OCR        : PaddleOCR-VL untuk layout, Markdown, dan region crop
   4. Logging    : konfigurasi level logging
+  5. Embedding  : representasi vektor untuk RAG dokumen (OpenAI-compatible)
 """
 
 from __future__ import annotations
@@ -336,6 +337,45 @@ class Settings:
     # --- 4. Logging Configuration ---
     log_level: str = field(
         default_factory=lambda: _env("LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    )
+
+    # --- 5. RAG & Embedding Configuration (OpenAI-compatible local / remote) ---
+    embedding_model: str = field(
+        default_factory=lambda: _env_first(
+            ("EMBEDDING_MODEL", "VLM_EMBEDDING_MODEL"),
+            "text-embedding-nomic-embed-text-v1.5",
+        )
+    )
+    embedding_base_url: str = field(
+        default_factory=lambda: _env_first(
+            ("EMBEDDING_BASE_URL", "BASE_URL", "LLM_BASE_URL"),
+            "http://127.0.0.1:8080/v1",
+        )
+    )
+    embedding_api_key: str = field(
+        default_factory=lambda: _env_first(
+            ("EMBEDDING_API_KEY", "API_KEY", "LLM_API_KEY"),
+            "not-needed",
+        )
+    )
+    embedding_timeout: float = field(
+        default_factory=lambda: _float_env("EMBEDDING_TIMEOUT", "120.0")
+    )
+    embedding_dimensions: int | None = field(
+        default_factory=lambda: (
+            _int_env("EMBEDDING_DIMENSIONS", "0")
+            if _raw_env("EMBEDDING_DIMENSIONS", "")
+            else None
+        )
+    )
+    rag_default_chunk_size: int = field(
+        default_factory=lambda: _int_env("RAG_DEFAULT_CHUNK_SIZE", "1000")
+    )
+    rag_default_chunk_overlap: int = field(
+        default_factory=lambda: _int_env("RAG_DEFAULT_CHUNK_OVERLAP", "150")
+    )
+    rag_default_top_k: int = field(
+        default_factory=lambda: _int_env("RAG_DEFAULT_TOP_K", "4")
     )
 
 

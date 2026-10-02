@@ -316,6 +316,18 @@ class ChunkPreview(BaseModel):
     end_char: int = Field(
         default=0, description="Posisi karakter akhir dalam dokumen"
     )
+    page_number: int | None = Field(
+        default=None, description="Nomor halaman asal chunk (1-based)"
+    )
+    image_path: str | None = Field(
+        default=None, description="Path ke citra visual halaman/region asal chunk"
+    )
+    image_metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Metadata teknis citra visual (resolusi, format)"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Metadata konteks hierarkis heading atau dokumen"
+    )
 
 
 ChunkItem = ChunkPreview
@@ -341,6 +353,10 @@ class DocumentChunkingPreview(BaseModel):
     chunks: list[ChunkPreview] = Field(
         default_factory=list,
         description="Daftar sampel pratinjau potongan chunk",
+    )
+    multimodal_chunks_count: int = Field(
+        default=0,
+        description="Jumlah chunk yang mengikat referensi citra visual halaman",
     )
 
 
